@@ -22,14 +22,15 @@ Open **Settings** in the panel to choose the display language, save a GitHub tok
 
 ## Install locally
 
-From this directory, install a copy into Omarchy's user plugin directory:
+Install from the public repository with Omarchy:
 
 ```sh
-mkdir -p ~/.config/omarchy/plugins/com.aywuyan.github-release-updater
-cp -a manifest.json BarWidget.qml AppPanel.qml apps.example.json scripts ~/.config/omarchy/plugins/com.aywuyan.github-release-updater/
-omarchy plugin validate ~/.config/omarchy/plugins/com.aywuyan.github-release-updater
-omarchy plugin enable com.aywuyan.github-release-updater --section right
+omarchy plugin add https://github.com/aywuyan/omarchy-github-release-updater --enable
 ```
+
+To remove the plugin, run `omarchy plugin remove com.aywuyan.github-release-updater`. This removes the installed plugin; it does not uninstall any applications you track. Per-user app settings and credentials are stored under `~/.config/omarchy/github-release-updater/` and in the desktop keyring, respectively.
+
+The plugin uses Python 3 and Omarchy Shell. Updating `.pkg.tar.zst` or `.pkg.tar.xz` assets requires `sudo`/`pacman`; AppImage updates use standard Python libraries. Saving a token requires `secret-tool` and a desktop keyring. `gh` is optional and enables GitHub CLI sign-in.
 
 The bar checks every six hours and stays visible so the management panel is always accessible, including when all apps are up to date. Clicking the indicator opens the management panel. Each update opens a floating terminal and asks before downloading and installing. The **Remove** action removes an app from the tracking manifest after confirmation; it does not uninstall the app. `pacman` can ask its own package replacement questions as well.
 
