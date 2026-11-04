@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "com.aywuyan.github-release-updater",
+  "name": "GitHub app updates",
+  "version": "0.8.3",
+  "author": "Aywuyan",
+  "license": "MIT",
+  "description": "Checks configured apps against GitHub Releases and opens a reviewed update flow.",
+  "kinds": [
+    "bar-widget",
+    "panel"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml",
+    "panel": "AppPanel.qml"
+  },
+  "barWidget": {
+    "displayName": "GitHub app updates",
+    "description": "Shows when a configured GitHub application has a newer release.",
+    "category": "System",
+    "aliases": ["github releases", "application updates", "external apps"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
