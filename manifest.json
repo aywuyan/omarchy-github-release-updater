@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.aywuyan.github-release-updater",
   "name": "GitHub app updates",
-  "version": "0.8.3",
+  "version": "0.9.2",
   "author": "Aywuyan",
   "license": "MIT",
   "description": "Checks configured apps against GitHub Releases and opens a reviewed update flow.",

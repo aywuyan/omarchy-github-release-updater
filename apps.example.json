@@ -5,7 +5,8 @@
       "repo": "xishang0128/sparkle",
       "installed_version": "1.26.9",
       "asset_regex": "^sparkle-linux-[0-9.]+-x64\\.pkg\\.tar\\.zst$",
-      "install_method": "pacman"
+      "install_method": "pacman",
+      "release_channel": "development"
     }
   ]
 }

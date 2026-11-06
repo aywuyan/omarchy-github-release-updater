@@ -164,6 +164,7 @@ Panel {
       "--version", installedVersion.text.trim(),
       "--asset-regex", assetPattern.text.trim(),
       "--install-method", installMethod.currentText,
+      "--release-channel", releaseChannel.currentText,
       "--name", appName.text.trim(),
       "--target", appTarget.text.trim(),
       "--json"
@@ -189,6 +190,7 @@ Panel {
       releaseUrl.text = ""
       installedVersion.text = ""
       assetPattern.text = ""
+      releaseChannel.currentIndex = 0
       appName.text = ""
       appTarget.text = ""
       Qt.callLater(root.refresh)
@@ -435,6 +437,13 @@ Panel {
     statusText = tr("Opening update terminal for ", "正在打开更新终端：") + name
   }
 
+  function setAppChannel(name, channel) {
+    if (!helperPath || channelProc.running) return
+    statusText = tr("Switching ", "正在切换 ") + name + tr(" to ", "到") + channel + "…"
+    channelProc.command = ["python", helperPath, "set-channel", name, "--release-channel", channel]
+    channelProc.running = true
+  }
+
   onOpenedChanged: if (opened) refresh()
 
   Process {
@@ -459,6 +468,17 @@ Panel {
     onExited: function(exitCode) {
       root.checkExitCode = exitCode
       root.finishCheckIfReady()
+    }
+  }
+
+  Process {
+    id: channelProc
+    command: []
+    onExited: function(exitCode) {
+      root.statusText = exitCode === 0
+        ? root.tr("Release channel updated.", "发行通道已更新。")
+        : root.tr("Could not update the release channel.", "无法更新发行通道。")
+      root.refresh()
     }
   }
 
@@ -649,6 +669,7 @@ Panel {
                   Text {
                     Layout.fillWidth: true
                     text: modelData.name + "  " + modelData.current + " → " + modelData.latest
+                      + (modelData.release_channel === "development" ? " · " + root.tr("dev", "开发版") : "")
                     color: "#f1f3f5"
                     font.family: Style.font.family
                     font.pixelSize: Style.font.body
@@ -668,6 +689,13 @@ Panel {
                   visible: modelData.status === "update available"
                   text: root.tr("Update…", "更新…")
                   onClicked: root.launchUpdate(modelData.name)
+                }
+                Button {
+                  text: modelData.release_channel === "development"
+                    ? root.tr("Switch to stable", "切换到稳定版")
+                    : root.tr("Switch to dev", "切换到开发版")
+                  enabled: !channelProc.running
+                  onClicked: root.setAppChannel(modelData.name, modelData.release_channel === "development" ? "stable" : "development")
                 }
                 Button {
                   text: root.tr("Release", "发行页")
@@ -705,7 +733,8 @@ Panel {
             Layout.fillWidth: true
             TextField { id: appName; Layout.preferredWidth: 180; placeholderText: root.tr("App / package name", "应用名 / Pacman 包名"); selectByMouse: true }
             TextField { id: installedVersion; Layout.preferredWidth: 180; placeholderText: root.tr("Installed version", "当前安装版本"); selectByMouse: true }
-            ComboBox { id: installMethod; Layout.preferredWidth: 160; model: ["pacman", "appimage"] }
+            ComboBox { id: installMethod; Layout.preferredWidth: 140; model: ["pacman", "appimage"] }
+            ComboBox { id: releaseChannel; Layout.preferredWidth: 150; model: ["stable", "development"] }
             Item { Layout.fillWidth: true }
           }
 

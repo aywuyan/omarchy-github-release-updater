@@ -14,10 +14,11 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 
 API = "https://api.github.com/repos/{repo}/releases/latest"
+RELEASES_API = "https://api.github.com/repos/{repo}/releases?per_page=100"
 DEFAULT_MANIFEST = Path.home() / ".config/omarchy/github-release-updater/apps.json"
 SETTINGS_FILE = Path.home() / ".config/omarchy/github-release-updater/settings.json"
 SECRET_SERVICE = "com.aywuyan.github-release-updater"
@@ -54,8 +55,12 @@ def load_apps(manifest):
             if not app.get(field):
                 raise ValueError(f"application entry is missing {field!r}")
         app.setdefault("asset_regex", "")
+        app.setdefault("release_channel", "stable")
         if not isinstance(app["asset_regex"], str):
             raise ValueError("application field 'asset_regex' must be a string")
+        if app["release_channel"] not in ("stable", "development"):
+            raise ValueError("application field 'release_channel' must be stable or development")
+        app.setdefault("installed_build_id", "")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", app["repo"]):
             raise ValueError(f"invalid GitHub repository: {app['repo']}")
     return apps
@@ -351,36 +356,104 @@ def auto_detect_assets(assets, install_method):
 
 
 def release_for(app):
-    release = github_json(API.format(repo=app["repo"]))
-    if release.get("draft") or release.get("prerelease"):
-        raise ValueError("GitHub latest endpoint returned a draft or prerelease")
+    if app.get("release_channel", "stable") == "development":
+        releases = github_json(RELEASES_API.format(repo=app["repo"]))
+        releases = [release for release in releases if not release.get("draft") and release.get("prerelease")]
+        if not releases:
+            raise ValueError("GitHub repository has no published developer prereleases")
+        release = max(releases, key=lambda item: item.get("created_at", ""))
+    else:
+        release = github_json(API.format(repo=app["repo"]))
+        if release.get("draft") or release.get("prerelease"):
+            raise ValueError("GitHub latest endpoint returned a draft or prerelease")
     return release
 
 
 def compare_versions(current_version, latest_version):
-    current_parts = re.findall(r"\d+", current_version)
-    latest_parts = re.findall(r"\d+", latest_version)
-    if not current_parts or not latest_parts:
+    def numeric_parts(version):
+        match = re.match(r"\s*[vV]?(\d+(?:\.\d+)*)", str(version))
+        return tuple(map(int, match.group(1).split("."))) if match else ()
+
+    current = numeric_parts(current_version)
+    latest = numeric_parts(latest_version)
+    if not current or not latest:
         return None
-    current = tuple(map(int, current_parts))
-    latest = tuple(map(int, latest_parts))
     return (latest > current) - (latest < current)
+
+
+def installed_version_for(app, fallback=None):
+    if app.get("install_method") == "pacman":
+        try:
+            result = subprocess.run(
+                ["pacman", "-Q", app["name"]], check=True, capture_output=True,
+                text=True, timeout=8,
+            )
+            fields = result.stdout.split()
+            if len(fields) >= 2:
+                return fields[-1]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return str(fallback if fallback is not None else app["installed_version"])
+
+
+def release_commit_for(app, release):
+    tag = str(release.get("tag_name", ""))
+    if not tag:
+        return ""
+    try:
+        commit = github_json(f"https://api.github.com/repos/{app['repo']}/commits/{quote(tag, safe='')}")
+        sha = str(commit.get("sha", "")).lower()
+        return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+    except (OSError, ValueError, urllib.error.URLError):
+        return ""
+
+
+def infer_installed_channel(app, current_version):
+    channel = app.get("installed_release_channel")
+    if channel in ("stable", "development"):
+        return channel
+    if app.get("install_method") == "pacman" and re.search(r"(?:^|[_-])rolling[_-]", current_version.lower()):
+        return "development"
+    return ""
 
 
 def inspect(app):
     release = release_for(app)
     tag = release.get("tag_name", "")
     asset = select_asset(app, release)
-    comparison = compare_versions(app["installed_version"], tag)
-    status = "compare manually" if comparison is None else (
-        "update available" if comparison > 0 else
-        "up to date" if comparison == 0 else "installed version is newer"
-    )
+    channel = app.get("release_channel", "stable")
+    current_version = installed_version_for(app)
+    asset_version_match = re.search(r"(?<!\d)(\d+(?:\.\d+){1,3})(?!\d)", asset["name"])
+    latest_version = asset_version_match.group(1) if channel == "development" and asset_version_match else tag
+    build_id = asset.get("digest") or asset.get("updated_at") or str(asset.get("id", ""))
+    comparison = compare_versions(current_version, latest_version)
+    installed_channel = infer_installed_channel(app, current_version)
+    if installed_channel and installed_channel != channel:
+        status = "update available"
+    elif channel == "development":
+        if app.get("installed_build_id"):
+            status = "up to date" if app["installed_build_id"] == build_id else "update available"
+        else:
+            release_commit = release_commit_for(app, release)
+            installed_commit = re.search(r"(?:^|[_-])rolling_([0-9a-f]{7,40})(?:[-+.]|$)", current_version.lower())
+            same_developer_build = bool(
+                release_commit and installed_commit
+                and release_commit.startswith(installed_commit.group(1))
+            )
+            # Pacman developer packages may record the rolling commit in their installed version.
+            status = "up to date" if same_developer_build else "update available"
+    else:
+        status = "compare manually" if comparison is None else (
+            "update available" if comparison > 0 else
+            "up to date" if comparison == 0 else "installed version is newer"
+        )
     return {
         "name": app["name"],
         "repo": app["repo"],
-        "current": app["installed_version"],
-        "latest": tag,
+        "current": current_version,
+        "latest": latest_version if channel == "development" else tag,
+        "release_channel": channel,
+        "build_id": build_id,
         "status": status,
         "release_url": release.get("html_url", ""),
         "asset": asset["name"],
@@ -409,9 +482,31 @@ def download_asset(asset, destination):
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(asset["browser_download_url"], headers=headers)
     temp = destination.with_name(destination.name + ".part")
+    total = int(asset.get("size") or 0)
+    chunk_size = 1024 * 1024
+
+    def show_progress(downloaded, finished=False):
+        fraction = min(downloaded / total, 1.0) if total else 0.0
+        bar_width = 24
+        filled = round(bar_width * fraction)
+        bar = "█" * filled + "░" * (bar_width - filled) if total else ""
+        size_text = f"{format_size(downloaded)} / {format_size(total)}" if total else f"{format_size(downloaded)}"
+        percent_text = f" {fraction * 100:5.1f}%" if total else ""
+        end = "\n" if finished else "\r"
+        print(f"  Downloading [{bar}] {size_text}{percent_text}", end=end, file=sys.stderr, flush=True)
+
     try:
         with open_url(request, timeout=60) as response, temp.open("wb") as out:
-            shutil.copyfileobj(response, out)
+            print(f"  Downloading {asset['name']}", file=sys.stderr, flush=True)
+            downloaded = 0
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                out.write(chunk)
+                downloaded += len(chunk)
+                show_progress(downloaded)
+            show_progress(downloaded, finished=True)
         if temp.stat().st_size != asset["size"]:
             raise ValueError(f"download size mismatch: got {temp.stat().st_size}, expected {asset['size']}")
         digest = asset.get("digest")
@@ -419,6 +514,7 @@ def download_asset(asset, destination):
             algorithm, expected = digest.split(":", 1)
             if algorithm.lower() != "sha256":
                 raise ValueError(f"unsupported GitHub digest algorithm: {algorithm}")
+            print("  Verifying SHA-256…", file=sys.stderr, flush=True)
             hasher = hashlib.sha256()
             with temp.open("rb") as downloaded:
                 for chunk in iter(lambda: downloaded.read(1024 * 1024), b""):
@@ -428,9 +524,18 @@ def download_asset(asset, destination):
                 raise ValueError("SHA-256 verification failed")
         temp.replace(destination)
     except Exception:
+        print(file=sys.stderr, flush=True)
         temp.unlink(missing_ok=True)
         raise
     return destination
+
+
+def format_size(size):
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
 
 
 def install(app, asset, path):
@@ -460,18 +565,24 @@ def install(app, asset, path):
         raise ValueError(f"unsupported install method: {method}")
 
 
-def persist_version(manifest, app, version):
+def persist_version(manifest, app, version, build_id=""):
     data = json.loads(manifest.read_text(encoding="utf-8"))
     for item in data.get("apps", []):
         if item.get("name") == app["name"] and item.get("repo") == app["repo"]:
             item["installed_version"] = version
+            channel = app.get("release_channel", "stable")
+            item["installed_release_channel"] = channel
+            if channel == "development":
+                item["installed_build_id"] = build_id
+            else:
+                item.pop("installed_build_id", None)
             break
     temp = manifest.with_name(manifest.name + ".tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp.replace(manifest)
 
 
-def add_release_app(manifest, url, version, asset_regex, install_method, name, target):
+def add_release_app(manifest, url, version, asset_regex, install_method, name, target, release_channel="stable"):
     parsed = urlsplit(url.strip())
     if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
         raise ValueError("enter an https://github.com/owner/repository URL")
@@ -499,6 +610,8 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
             raise ValueError(f"invalid asset regular expression: {exc}") from exc
     if install_method not in ("pacman", "appimage"):
         raise ValueError("install method must be pacman or appimage")
+    if release_channel not in ("stable", "development"):
+        raise ValueError("release channel must be stable or development")
     app_name = name.strip() or repository
     app = {
         "name": app_name,
@@ -506,6 +619,7 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
         "installed_version": version.strip(),
         "asset_regex": asset_regex,
         "install_method": install_method,
+        "release_channel": release_channel,
     }
     if install_method == "appimage":
         target_path = Path(target).expanduser()
@@ -587,9 +701,26 @@ def remove_release_app(manifest, name):
     return removed
 
 
+def set_release_channel(manifest, name, release_channel):
+    if release_channel not in ("stable", "development"):
+        raise ValueError("release channel must be stable or development")
+    if not manifest.exists():
+        raise ValueError("app manifest does not exist")
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    apps = data.get("apps", [])
+    app = next((item for item in apps if item.get("name") == name), None)
+    if app is None:
+        raise ValueError(f"no registered app named {name!r}")
+    app["release_channel"] = release_channel
+    temp = manifest.with_name(manifest.name + ".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(manifest)
+    return release_channel
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "download", "update", "add", "remove", "detect-version", "settings-service"))
+    parser.add_argument("action", choices=("check", "download", "update", "add", "remove", "set-channel", "detect-version", "settings-service"))
     parser.add_argument("name", nargs="?", help="app name (omit for check)")
     parser.add_argument("--name", dest="app_name", default="", help="display name for add action")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -602,6 +733,7 @@ def main():
     parser.add_argument("--asset-regex", default="", help="optional regex selecting one release asset (add action)")
     parser.add_argument("--install-method", choices=("pacman", "appimage"), default="pacman")
     parser.add_argument("--target", default="", help="absolute installed path, required for AppImage")
+    parser.add_argument("--release-channel", choices=("stable", "development"), default="stable")
     args = parser.parse_args()
 
     try:
@@ -612,7 +744,8 @@ def main():
             if not args.url or not args.version:
                 raise ValueError("add requires --url and --version")
             app = add_release_app(args.manifest, args.url, args.version, args.asset_regex,
-                                  args.install_method, args.app_name or args.name or "", args.target)
+                                  args.install_method, args.app_name or args.name or "", args.target,
+                                  args.release_channel)
             result = {"ok": True, "name": app["name"], "repo": app["repo"]}
             print(json.dumps(result, ensure_ascii=False) if args.json else f"Added {app['name']} ({app['repo']})")
             return 0
@@ -622,6 +755,13 @@ def main():
             removed = remove_release_app(args.manifest, args.name)
             result = {"ok": True, "name": args.name, "removed": removed}
             print(json.dumps(result, ensure_ascii=False) if args.json else f"Removed {args.name} from tracking")
+            return 0
+        if args.action == "set-channel":
+            if not args.name:
+                raise ValueError("set-channel requires an app name")
+            channel = set_release_channel(args.manifest, args.name, args.release_channel)
+            result = {"ok": True, "name": args.name, "release_channel": channel}
+            print(json.dumps(result, ensure_ascii=False) if args.json else f"Set {args.name} channel to {channel}")
             return 0
         if args.action == "detect-version":
             detected = detect_installed_version(args.install_method, args.name or "", args.target, args.url)
@@ -669,7 +809,8 @@ def main():
                             continue
                         print("  warning: GitHub provided no asset digest; review upstream checksums before proceeding")
                     install(app, asset, staged)
-                    persist_version(args.manifest, app, result["latest"])
+                    installed_version = installed_version_for(app, result["latest"])
+                    persist_version(args.manifest, app, installed_version, result.get("build_id", ""))
             except (OSError, ValueError, urllib.error.URLError, subprocess.CalledProcessError) as exc:
                 errors.append({"name": app["name"], "error": str(exc)})
                 results.append({
@@ -698,7 +839,7 @@ def main():
             return 1
     except (OSError, ValueError, urllib.error.URLError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         if args.json:
-            if args.action in ("add", "remove", "detect-version"):
+            if args.action in ("add", "remove", "set-channel", "detect-version"):
                 print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
                 return 0
             print(json.dumps({"checked": 0, "updates": 0, "apps": [], "errors": [{"error": str(exc)}]}))
