@@ -60,8 +60,8 @@ The panel keeps its own preferences in
   When disabled, the session's `HTTP(S)_PROXY` settings apply instead. An
   advanced `no_proxy` string can be added to `settings.json` by hand.
 - **Automatic check interval** — every hour, 3, 6, 12, 24, 48 hours, weekly, or
-  off. The default is every 6 hours; the check also runs when the bar starts and
-  when the panel is opened (at most once a minute).
+  off. The default is every 6 hours; when enabled, the check also runs when the
+  bar starts and when the panel is opened (at most once a minute).
 
 The interface follows the language chosen under **Setup > Language** and updates
 without a restart. English and Simplified Chinese (`zh-CN`) catalogs ship in
