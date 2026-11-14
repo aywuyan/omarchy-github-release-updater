@@ -22,67 +22,218 @@ RELEASES_API = "https://api.github.com/repos/{repo}/releases?per_page=100"
 DEFAULT_MANIFEST = Path.home() / ".config/omarchy/github-release-updater/apps.json"
 SETTINGS_FILE = Path.home() / ".config/omarchy/github-release-updater/settings.json"
 SECRET_SERVICE = "com.aywuyan.github-release-updater"
+USER_AGENT = "omarchy-github-release-updater"
+
+# Bounds for data that comes from the network. GitHub release metadata is small;
+# an asset may be large, but never larger than the size the API reported for it.
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024
+DOWNLOAD_CHUNK = 1024 * 1024
+
+# App names double as directory names under the download directory, so they are
+# deliberately narrow: no slash, no leading dot or dash, no "..".
+APP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._+@-]{0,63}$")
+PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@-]{0,127}$")
+REPO_PART_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
+INTERVAL_HOURS = (0, 1, 3, 6, 12, 24, 48, 168)
+
+STATUS_TEXT = {
+    "update_available": "update available",
+    "up_to_date": "up to date",
+    "installed_newer": "installed version is newer",
+    "compare_manually": "compare manually",
+    "check_failed": "check failed",
+}
+
+_token_cache = {"loaded": False, "value": ""}
+_settings_cache = {"key": None, "value": None}
 
 
-def github_json(url):
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "github-release-updater"}
-    token = github_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)
-    with open_url(request, timeout=30) as response:
-        return json.load(response)
+class UpdaterError(Exception):
+    """A failure with a stable machine code the UI can translate."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def fail(code, message):
+    raise UpdaterError(code, message)
+
+
+def error_code(exc):
+    if isinstance(exc, UpdaterError):
+        return exc.code
+    if isinstance(exc, urllib.error.HTTPError):
+        return http_error_code(exc)
+    if isinstance(exc, urllib.error.URLError):
+        return "network"
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(exc, json.JSONDecodeError):
+        return "bad_response"
+    if isinstance(exc, FileNotFoundError):
+        return "file_not_found"
+    if isinstance(exc, PermissionError):
+        return "permission_denied"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return "command_failed"
+    if isinstance(exc, OSError):
+        return "os_error"
+    return "internal"
+
+
+def http_error_code(exc):
+    if exc.code == 401:
+        return "unauthorized"
+    if exc.code == 404:
+        return "not_found"
+    if exc.code == 403:
+        remaining = (exc.headers or {}).get("x-ratelimit-remaining")
+        if str(remaining) == "0":
+            return "rate_limited"
+        return "forbidden"
+    if exc.code == 407:
+        return "proxy_auth_required"
+    return "http_error"
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects without handing the GitHub token to another host.
+
+    urllib copies every request header except content-length/content-type onto
+    the redirected request, Authorization included. A release asset redirects
+    to a storage host, which has no business seeing the token.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        if (urlsplit(newurl).hostname or "").lower() != (urlsplit(req.full_url).hostname or "").lower():
+            new.remove_header("Authorization")
+            new.remove_header("authorization")
+        return new
 
 
 def open_url(request, timeout):
     apply_proxy_settings()
     settings = read_settings()
     address = settings.get("proxy_address", "")
+    handlers = [SafeRedirectHandler()]
     if settings.get("proxy_enabled") and address:
         proxy = f"http://{address}"
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-        return opener.open(request, timeout=timeout)
-    return urllib.request.urlopen(request, timeout=timeout)
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(request, timeout=timeout)
+
+
+def github_json(url):
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT}
+    token = github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    with open_url(request, timeout=30) as response:
+        raw = response.read(MAX_JSON_BYTES + 1)
+    if len(raw) > MAX_JSON_BYTES:
+        fail("response_too_large", "GitHub returned more data than this plugin accepts")
+    return json.loads(raw)
 
 
 def load_apps(manifest):
-    data = json.loads(manifest.read_text(encoding="utf-8"))
+    # A fresh install has no manifest yet. That is "nothing configured", not a
+    # failure: the panel offers the Add form and the bar stays calm.
+    if not manifest.exists():
+        return []
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail("manifest_invalid", f"app manifest is not valid JSON: {exc}")
     apps = data.get("apps", [])
     if not isinstance(apps, list):
-        raise ValueError("manifest field 'apps' must be a list")
+        fail("manifest_invalid", "manifest field 'apps' must be a list")
     for app in apps:
+        if not isinstance(app, dict):
+            fail("manifest_invalid", "every manifest entry must be an object")
         for field in ("name", "repo", "installed_version", "install_method"):
             if not app.get(field):
-                raise ValueError(f"application entry is missing {field!r}")
+                fail("app_missing_field", f"application entry is missing {field!r}")
         app.setdefault("asset_regex", "")
         app.setdefault("release_channel", "stable")
-        if not isinstance(app["asset_regex"], str):
-            raise ValueError("application field 'asset_regex' must be a string")
-        if app["release_channel"] not in ("stable", "development"):
-            raise ValueError("application field 'release_channel' must be stable or development")
         app.setdefault("installed_build_id", "")
+        app.setdefault("package", "")
+        app.setdefault("target", "")
+        if not isinstance(app["asset_regex"], str):
+            fail("app_bad_regex", "application field 'asset_regex' must be a string")
+        if app["asset_regex"]:
+            try:
+                re.compile(app["asset_regex"])
+            except re.error as exc:
+                fail("app_bad_regex", f"invalid asset regular expression: {exc}")
+        if app["release_channel"] not in ("stable", "development"):
+            fail("app_bad_channel", "application field 'release_channel' must be stable or development")
+        if app["install_method"] not in ("pacman", "appimage"):
+            fail("app_bad_method", "application field 'install_method' must be pacman or appimage")
+        validate_app_name(app["name"])
+        validate_package_name(app["package"], required=False)
+        if not isinstance(app["installed_build_id"], str):
+            fail("manifest_invalid", "application field 'installed_build_id' must be a string")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", app["repo"]):
-            raise ValueError(f"invalid GitHub repository: {app['repo']}")
+            fail("app_bad_repo", f"invalid GitHub repository: {app['repo']}")
+        validate_repo_parts(*app["repo"].split("/", 1))
+        if app["install_method"] == "appimage":
+            target = Path(str(app.get("target") or "")).expanduser()
+            if not str(app.get("target") or "").strip() or not target.is_absolute():
+                fail("app_missing_target", f"{app['name']}: AppImage entries need an absolute target path")
     return apps
 
 
-def github_token():
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        return token
-    token = secret_lookup("github-token")
-    if token:
-        return token
-    if not shutil.which("gh"):
-        return ""
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "token"], check=True, capture_output=True,
-            text=True, timeout=5,
+def validate_app_name(name):
+    text = str(name or "")
+    if text != text.strip() or not APP_NAME_RE.fullmatch(text) or text in (".", ".."):
+        fail(
+            "app_bad_name",
+            "app names must start with a letter or digit and use only letters, digits, spaces, . _ + @ -",
         )
-        return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+    return text
+
+
+def validate_package_name(name, required):
+    text = str(name or "").strip()
+    if not text:
+        if required:
+            fail("app_missing_package", "a Pacman package name is required")
         return ""
+    if not PACKAGE_RE.fullmatch(text):
+        fail("app_bad_package", "Pacman package names use only letters, digits, . _ + @ -")
+    return text
+
+
+def validate_repo_parts(owner, repository):
+    for part in (owner, repository):
+        if part in (".", "..") or not REPO_PART_RE.fullmatch(part):
+            fail("app_bad_repo", "repository names use only letters, digits, . _ -")
+
+
+def github_token():
+    if _token_cache["loaded"]:
+        return _token_cache["value"]
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        token = secret_lookup("github-token")
+    if not token and shutil.which("gh"):
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"], check=True, capture_output=True,
+                text=True, timeout=5,
+            )
+            token = result.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            token = ""
+    _token_cache["value"] = token or ""
+    _token_cache["loaded"] = True
+    return _token_cache["value"]
 
 
 def secret_lookup(key):
@@ -100,9 +251,9 @@ def secret_lookup(key):
 
 def secret_store(key, value):
     if not shutil.which("secret-tool"):
-        raise ValueError("secret-tool is required to store credentials in the desktop keyring")
-    if any(ord(char) < 32 and char not in "\t" for char in value):
-        raise ValueError("value contains unsupported control characters")
+        fail("secret_tool_missing", "secret-tool is required to store credentials in the desktop keyring")
+    if any(ord(char) < 32 for char in value):
+        fail("secret_control_chars", "value contains unsupported control characters")
     subprocess.run(
         ["secret-tool", "store", "--label=GitHub Release Updater", "service", SECRET_SERVICE, "key", key],
         input=value + "\n", capture_output=True, text=True, timeout=20, check=True,
@@ -111,45 +262,81 @@ def secret_store(key, value):
 
 def secret_clear(key):
     if not shutil.which("secret-tool"):
-        raise ValueError("secret-tool is required to manage credentials in the desktop keyring")
+        fail("secret_tool_missing", "secret-tool is required to manage credentials in the desktop keyring")
     subprocess.run(
         ["secret-tool", "clear", "service", SECRET_SERVICE, "key", key],
         capture_output=True, text=True, timeout=10, check=True,
     )
 
 
-def read_settings():
-    if not SETTINGS_FILE.exists():
-        return {"no_proxy": "", "language": "auto", "proxy_address": "", "proxy_enabled": False}
-    data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    language = str(data.get("language", "auto"))
-    if language not in ("auto", "zh", "en"):
-        language = "auto"
-    proxy_address = str(data.get("proxy_address", ""))
-    legacy_proxy = False
-    if not proxy_address:
-        for key in ("https-proxy", "http-proxy"):
-            old_value = secret_lookup(key)
-            if not old_value:
-                continue
-            parsed = urlsplit(old_value)
-            if parsed.scheme in ("http", "https") and parsed.hostname in ("127.0.0.1", "0", "0.0.0.0") and parsed.port:
-                host = "0" if parsed.hostname in ("0", "0.0.0.0") else "127.0.0.1"
-                proxy_address = f"{host}:{parsed.port}"
-                legacy_proxy = True
-                break
-    proxy_enabled = data.get("proxy_enabled", bool(proxy_address)) is True
-    if legacy_proxy and "proxy_enabled" not in data:
-        proxy_enabled = True
+def default_settings():
     return {
-        "no_proxy": str(data.get("no_proxy", "")),
-        "language": language,
-        "proxy_address": proxy_address,
-        "proxy_enabled": proxy_enabled,
+        "language": "auto",
+        "proxy_address": "",
+        "proxy_enabled": False,
+        "no_proxy": "",
+        "check_interval_hours": 6,
     }
 
 
+def read_settings():
+    try:
+        stat = SETTINGS_FILE.stat()
+        cache_key = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+    if cache_key is not None and _settings_cache["key"] == cache_key:
+        return _settings_cache["value"]
+
+    data = default_settings()
+    legacy_proxy = False
+    if cache_key is not None:
+        try:
+            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        if isinstance(raw, dict):
+            data.update({key: raw[key] for key in data if key in raw})
+    try:
+        data["check_interval_hours"] = clamp_interval(data.get("check_interval_hours"))
+    except (TypeError, ValueError):
+        data["check_interval_hours"] = 6
+    data["proxy_address"] = str(data.get("proxy_address") or "").strip()
+    data["proxy_enabled"] = data.get("proxy_enabled") is True and bool(data["proxy_address"])
+    data["no_proxy"] = str(data.get("no_proxy") or "")
+    if not data["proxy_address"]:
+        address = legacy_proxy_address()
+        if address:
+            data["proxy_address"] = address
+            data["proxy_enabled"] = True
+            legacy_proxy = True
+    data["legacy_proxy"] = legacy_proxy
+    _settings_cache["key"] = cache_key
+    _settings_cache["value"] = data
+    return data
+
+
+def legacy_proxy_address():
+    for key in ("https-proxy", "http-proxy"):
+        raw = secret_lookup(key)
+        if not raw:
+            continue
+        parsed = urlsplit(raw)
+        if parsed.scheme in ("http", "https") and parsed.hostname in ("127.0.0.1", "0", "0.0.0.0") and parsed.port:
+            host = "0" if parsed.hostname in ("0", "0.0.0.0") else "127.0.0.1"
+            return f"{host}:{parsed.port}"
+    return ""
+
+
+def clamp_interval(value):
+    hours = int(value)
+    if hours not in INTERVAL_HOURS:
+        hours = 6
+    return hours
+
+
 def write_settings(data):
+    invalidate_settings_cache()
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(SETTINGS_FILE.parent, 0o700)
     temp = SETTINGS_FILE.with_name(SETTINGS_FILE.name + ".tmp")
@@ -157,44 +344,58 @@ def write_settings(data):
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         json.dump({
             "no_proxy": data.get("no_proxy", ""),
-            "language": data.get("language", "auto"),
             "proxy_address": data.get("proxy_address", ""),
             "proxy_enabled": data.get("proxy_enabled", False),
+            "check_interval_hours": clamp_interval(data.get("check_interval_hours", 6)),
         }, out, ensure_ascii=False, indent=2)
         out.write("\n")
     os.chmod(temp, 0o600)
     temp.replace(SETTINGS_FILE)
 
 
+def invalidate_settings_cache():
+    _settings_cache["key"] = None
+    _settings_cache["value"] = None
+
+
 def valid_proxy_url(value):
     value = value.strip()
     if not value:
-        return ""
+        fail("proxy_invalid", "enter a local proxy address")
     if any(ord(char) < 32 for char in value):
-        raise ValueError("proxy address contains control characters")
+        fail("proxy_invalid", "proxy address contains control characters")
     match = re.fullmatch(r"(127\.0\.0\.1|0):([0-9]{1,5})", value)
     if not match:
-        raise ValueError("enter a local proxy as 127.0.0.1:PORT or 0:PORT")
+        fail("proxy_invalid", "enter a local proxy as 127.0.0.1:PORT or 0:PORT")
     port = int(match.group(2))
     if not 1 <= port <= 65535:
-        raise ValueError("proxy port must be between 1 and 65535")
+        fail("proxy_port", "proxy port must be between 1 and 65535")
     return value
 
 
 def test_proxy_address(value):
     address = valid_proxy_url(value)
-    if not address:
-        raise ValueError("enter a local proxy address before testing")
     proxy = f"http://{address}"
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    request = urllib.request.Request("https://api.github.com/zen", headers={"User-Agent": "omarchy-github-release-updater"})
+    opener = urllib.request.build_opener(
+        SafeRedirectHandler(),
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+    )
+    request = urllib.request.Request("https://api.github.com/zen", headers={"User-Agent": USER_AGENT})
     try:
         with opener.open(request, timeout=12) as response:
-            return {"ok": True, "http_status": response.status}
+            return {"ok": True, "http_status": response.status, "reached": True}
     except urllib.error.HTTPError as exc:
-        if 400 <= exc.code < 500 and exc.code != 407:
-            return {"ok": True, "http_status": exc.code}
-        raise ValueError(f"proxy connection failed with HTTP {exc.code}") from exc
+        if exc.code == 407:
+            fail("proxy_auth_required", "the local proxy requires authentication")
+        if 400 <= exc.code < 500:
+            # Reaching GitHub through the proxy is what the test proves; a 4xx
+            # means the proxy works but GitHub refused this client.
+            return {"ok": True, "http_status": exc.code, "reached": True}
+        fail("proxy_unreachable", f"proxy connection failed with HTTP {exc.code}")
+    except urllib.error.URLError as exc:
+        fail("proxy_unreachable", f"proxy connection failed: {exc.reason}")
+    except OSError as exc:
+        fail("proxy_unreachable", f"proxy connection failed: {exc}")
 
 
 def apply_proxy_settings():
@@ -205,8 +406,24 @@ def apply_proxy_settings():
         os.environ["no_proxy"] = no_proxy
 
 
+def plugin_version():
+    try:
+        manifest = Path(__file__).resolve().parent.parent / "manifest.json"
+        return str(json.loads(manifest.read_text(encoding="utf-8")).get("version", ""))
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
 def get_settings_status():
     settings = read_settings()
+    if settings.get("legacy_proxy"):
+        write_settings(settings)
+        for key in ("http-proxy", "https-proxy"):
+            try:
+                secret_clear(key)
+            except (OSError, ValueError, UpdaterError, subprocess.SubprocessError):
+                pass
+        settings = read_settings()
     http_proxy = secret_lookup("http-proxy")
     https_proxy = secret_lookup("https-proxy")
     gh_available = shutil.which("gh") is not None
@@ -226,34 +443,33 @@ def get_settings_status():
         "proxy_address": settings.get("proxy_address", ""),
         "proxy_enabled": settings.get("proxy_enabled", False),
         "no_proxy": settings.get("no_proxy", ""),
-        "language": settings.get("language", "auto"),
         "uses_environment_proxy": not bool(http_proxy or https_proxy),
+        "check_interval_hours": settings.get("check_interval_hours", 6),
+        "manifest_path": str(DEFAULT_MANIFEST),
+        "settings_path": str(SETTINGS_FILE),
+        "plugin_version": plugin_version(),
     }
 
 
 def process_settings_action(payload):
+    if not isinstance(payload, dict):
+        fail("bad_request", "settings requests must be JSON objects")
     action = payload.get("action")
     if action == "get":
         return {"ok": True, **get_settings_status()}
-    if action == "save-language":
-        language = str(payload.get("language", "auto"))
-        if language not in ("auto", "zh", "en"):
-            raise ValueError("language must be auto, zh, or en")
-        settings = read_settings()
-        settings["language"] = language
-        write_settings(settings)
-        return {"ok": True, "action": action, "language": language}
     if action == "save-token":
         token = str(payload.get("token", ""))
         if not token.strip():
-            raise ValueError("enter a GitHub token")
+            fail("token_required", "enter a GitHub token")
         secret_store("github-token", token.strip())
+        _token_cache["loaded"] = False
         return {"ok": True, "message": "GitHub token saved in the desktop keyring"}
     if action == "clear-token":
         secret_clear("github-token")
+        _token_cache["loaded"] = False
         return {"ok": True, "message": "GitHub token removed from the desktop keyring"}
     if action == "save-proxy":
-        proxy_address = valid_proxy_url(str(payload.get("proxy_address", "")))
+        proxy_address = valid_proxy_url(str(payload.get("proxy_address", ""))) if str(payload.get("proxy_address", "")).strip() else ""
         proxy_enabled = payload.get("proxy_enabled") is True and bool(proxy_address)
         settings = read_settings()
         settings["proxy_address"] = proxy_address
@@ -262,9 +478,10 @@ def process_settings_action(payload):
         for key in ("http-proxy", "https-proxy"):
             try:
                 secret_clear(key)
-            except (OSError, ValueError, subprocess.SubprocessError):
+            except (OSError, ValueError, UpdaterError, subprocess.SubprocessError):
                 pass
-        return {"ok": True, "action": action, "proxy_address": proxy_address, "proxy_saved": bool(proxy_address), "proxy_enabled": proxy_enabled}
+        return {"ok": True, "action": action, "proxy_address": proxy_address,
+                "proxy_saved": bool(proxy_address), "proxy_enabled": proxy_enabled}
     if action == "test-proxy":
         result = test_proxy_address(str(payload.get("proxy_address", "")))
         return {"ok": True, "action": action, **result}
@@ -281,20 +498,37 @@ def process_settings_action(payload):
         for key in ("http-proxy", "https-proxy"):
             try:
                 secret_clear(key)
-            except (OSError, ValueError, subprocess.SubprocessError):
+            except (OSError, ValueError, UpdaterError, subprocess.SubprocessError):
                 pass
         return {"ok": True, "action": action, "proxy_address": "", "proxy_saved": False, "proxy_enabled": False}
-    raise ValueError("unknown settings action")
+    if action == "save-interval":
+        try:
+            hours = clamp_interval(payload.get("hours"))
+        except (TypeError, ValueError):
+            fail("interval_invalid", "the check interval must be one of the offered values")
+        settings = read_settings()
+        settings["check_interval_hours"] = hours
+        write_settings(settings)
+        return {"ok": True, "action": action, "check_interval_hours": hours}
+    fail("unknown_settings_action", "unknown settings action")
 
 
 def settings_service():
     for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
         try:
             payload = json.loads(line)
             result = process_settings_action(payload)
-            result["action"] = payload.get("action", "")
-        except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-            result = {"ok": False, "error": str(exc)}
+            result["action"] = payload.get("action", "") if isinstance(payload, dict) else ""
+        except Exception as exc:  # keep serving: one bad request must not kill the panel
+            result = {
+                "ok": False,
+                "code": error_code(exc),
+                "error": str(exc) or exc.__class__.__name__,
+                "action": "",
+            }
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         sys.stdout.flush()
 
@@ -310,8 +544,12 @@ def select_asset(app, release):
         choices = ", ".join(a["name"] for a in matches[:8])
         suffix = f": {choices}" if choices else ""
         if asset_regex:
-            raise ValueError(f"expected one asset matching {asset_regex!r}; found {len(matches)}{suffix}")
-        raise ValueError(f"could not automatically choose one compatible release asset; found {len(matches)}{suffix}. Enter an optional filename regex to choose one")
+            fail("asset_regex_no_match", f"expected one asset matching {asset_regex!r}; found {len(matches)}{suffix}")
+        fail(
+            "asset_ambiguous",
+            f"could not automatically choose one compatible release asset; found {len(matches)}{suffix}. "
+            "Enter an optional filename regex to choose one",
+        )
     return matches[0]
 
 
@@ -360,32 +598,79 @@ def release_for(app):
         releases = github_json(RELEASES_API.format(repo=app["repo"]))
         releases = [release for release in releases if not release.get("draft") and release.get("prerelease")]
         if not releases:
-            raise ValueError("GitHub repository has no published developer prereleases")
-        release = max(releases, key=lambda item: item.get("created_at", ""))
-    else:
-        release = github_json(API.format(repo=app["repo"]))
-        if release.get("draft") or release.get("prerelease"):
-            raise ValueError("GitHub latest endpoint returned a draft or prerelease")
+            fail("no_prereleases", "GitHub repository has no published developer prereleases")
+        return max(releases, key=lambda item: item.get("created_at", ""))
+    release = github_json(API.format(repo=app["repo"]))
+    if release.get("draft") or release.get("prerelease"):
+        fail("latest_is_prerelease", "GitHub latest endpoint returned a draft or prerelease")
     return release
 
 
 def compare_versions(current_version, latest_version):
-    def numeric_parts(version):
-        match = re.match(r"\s*[vV]?(\d+(?:\.\d+)*)", str(version))
-        return tuple(map(int, match.group(1).split("."))) if match else ()
+    """Compare two release versions. Returns 1, 0, -1, or None if unreadable.
 
-    current = numeric_parts(current_version)
-    latest = numeric_parts(latest_version)
-    if not current or not latest:
+    Handles pacman epochs and pkgrels, a leading "v", semver build metadata, and
+    pre-release suffixes (1.2.3-rc1 is older than 1.2.3).
+    """
+    current = version_parts(current_version)
+    latest = version_parts(latest_version)
+    if current is None or latest is None:
         return None
-    return (latest > current) - (latest < current)
+    current_release, current_pre = current
+    latest_release, latest_pre = latest
+    width = max(len(current_release), len(latest_release))
+    current_release = current_release + (0,) * (width - len(current_release))
+    latest_release = latest_release + (0,) * (width - len(latest_release))
+    if latest_release != current_release:
+        return 1 if latest_release > current_release else -1
+    if current_pre == latest_pre:
+        return 0
+    if latest_pre == "":
+        return 1
+    if current_pre == "":
+        return -1
+    current_key = prerelease_key(current_pre)
+    latest_key = prerelease_key(latest_pre)
+    if latest_key == current_key:
+        return 0
+    return 1 if latest_key > current_key else -1
+
+
+def version_parts(version):
+    text = str(version or "").strip()
+    if not text:
+        return None
+    # pacman epoch: "1:2.3.4-1"
+    text = re.sub(r"^\d+:", "", text)
+    # pkgrel: a numeric trailing -N is a package revision, not a version.
+    text = re.sub(r"-(\d+)$", "", text)
+    # semver build metadata never affects ordering
+    text = text.split("+", 1)[0]
+    match = re.match(r"^\s*[vV]?(\d+(?:\.\d+)*)(.*)$", text)
+    if not match:
+        return None
+    release = tuple(map(int, match.group(1).split(".")))
+    remainder = match.group(2).strip()
+    remainder = remainder.lstrip(".-_~")
+    return release, remainder.lower()
+
+
+def prerelease_key(text):
+    key = []
+    for token in re.findall(r"[a-z]+|\d+", text.lower()):
+        if token.isdigit():
+            key.append((1, int(token)))
+        else:
+            key.append((0, token))
+    return key
 
 
 def installed_version_for(app, fallback=None):
     if app.get("install_method") == "pacman":
+        package = app.get("package") or app["name"]
         try:
             result = subprocess.run(
-                ["pacman", "-Q", app["name"]], check=True, capture_output=True,
+                ["pacman", "-Q", package], check=True, capture_output=True,
                 text=True, timeout=8,
             )
             fields = result.stdout.split()
@@ -412,7 +697,7 @@ def infer_installed_channel(app, current_version):
     channel = app.get("installed_release_channel")
     if channel in ("stable", "development"):
         return channel
-    if app.get("install_method") == "pacman" and re.search(r"(?:^|[_-])rolling[_-]", current_version.lower()):
+    if app.get("install_method") == "pacman" and re.search(r"(?:^|[_-])rolling[_-]", str(current_version).lower()):
         return "development"
     return ""
 
@@ -429,10 +714,10 @@ def inspect(app):
     comparison = compare_versions(current_version, latest_version)
     installed_channel = infer_installed_channel(app, current_version)
     if installed_channel and installed_channel != channel:
-        status = "update available"
+        status = "update_available"
     elif channel == "development":
         if app.get("installed_build_id"):
-            status = "up to date" if app["installed_build_id"] == build_id else "update available"
+            status = "up_to_date" if app["installed_build_id"] == build_id else "update_available"
         else:
             release_commit = release_commit_for(app, release)
             installed_commit = re.search(r"(?:^|[_-])rolling_([0-9a-f]{7,40})(?:[-+.]|$)", current_version.lower())
@@ -441,11 +726,11 @@ def inspect(app):
                 and release_commit.startswith(installed_commit.group(1))
             )
             # Pacman developer packages may record the rolling commit in their installed version.
-            status = "up to date" if same_developer_build else "update available"
+            status = "up_to_date" if same_developer_build else "update_available"
     else:
-        status = "compare manually" if comparison is None else (
-            "update available" if comparison > 0 else
-            "up to date" if comparison == 0 else "installed version is newer"
+        status = "compare_manually" if comparison is None else (
+            "update_available" if comparison > 0 else
+            "up_to_date" if comparison == 0 else "installed_newer"
         )
     return {
         "name": app["name"],
@@ -461,13 +746,15 @@ def inspect(app):
         "asset_size": asset["size"],
         "digest": asset.get("digest", ""),
         "install_method": app["install_method"],
+        "error_code": "",
+        "error": "",
         "release": release,
         "asset_info": asset,
     }
 
 
 def print_report(result):
-    print(f"{result['name']}: {result['current']} -> {result['latest']} ({result['status']})")
+    print(f"{result['name']}: {result['current']} -> {result['latest']} ({STATUS_TEXT.get(result['status'], result['status'])})")
     print(f"  repository: {result['repo']}")
     print(f"  asset: {result['asset']} ({result['asset_size']} bytes)")
     print(f"  SHA-256: {result['digest'] or 'not provided by GitHub API'}")
@@ -476,14 +763,18 @@ def print_report(result):
 
 def download_asset(asset, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
-    headers = {"User-Agent": "omarchy-github-release-updater"}
+    headers = {"User-Agent": USER_AGENT}
     token = github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(asset["browser_download_url"], headers=headers)
     temp = destination.with_name(destination.name + ".part")
-    total = int(asset.get("size") or 0)
-    chunk_size = 1024 * 1024
+    declared = int(asset.get("size") or 0)
+    limit = declared if declared > 0 else MAX_ASSET_BYTES
+    if limit <= 0 or limit > MAX_ASSET_BYTES:
+        fail("asset_too_large", "release asset is larger than this plugin will download")
+    total = declared
+    chunk_size = DOWNLOAD_CHUNK
 
     def show_progress(downloaded, finished=False):
         fraction = min(downloaded / total, 1.0) if total else 0.0
@@ -498,30 +789,36 @@ def download_asset(asset, destination):
     try:
         with open_url(request, timeout=60) as response, temp.open("wb") as out:
             print(f"  Downloading {asset['name']}", file=sys.stderr, flush=True)
+            length_header = response.headers.get("Content-Length")
+            if length_header and length_header.isdigit() and int(length_header) > limit:
+                fail("asset_too_large", "release asset is larger than its release metadata declares")
             downloaded = 0
             while True:
                 chunk = response.read(chunk_size)
                 if not chunk:
                     break
-                out.write(chunk)
                 downloaded += len(chunk)
+                if downloaded > limit:
+                    fail("asset_too_large", "release asset is larger than its release metadata declares")
+                out.write(chunk)
                 show_progress(downloaded)
             show_progress(downloaded, finished=True)
-        if temp.stat().st_size != asset["size"]:
-            raise ValueError(f"download size mismatch: got {temp.stat().st_size}, expected {asset['size']}")
+        size = temp.stat().st_size
+        if declared and size != declared:
+            fail("download_size_mismatch", f"download size mismatch: got {size}, expected {declared}")
         digest = asset.get("digest")
         if digest:
             algorithm, expected = digest.split(":", 1)
             if algorithm.lower() != "sha256":
-                raise ValueError(f"unsupported GitHub digest algorithm: {algorithm}")
+                fail("digest_unsupported", f"unsupported GitHub digest algorithm: {algorithm}")
             print("  Verifying SHA-256…", file=sys.stderr, flush=True)
             hasher = hashlib.sha256()
             with temp.open("rb") as downloaded:
-                for chunk in iter(lambda: downloaded.read(1024 * 1024), b""):
+                for chunk in iter(lambda: downloaded.read(DOWNLOAD_CHUNK), b""):
                     hasher.update(chunk)
             actual = hasher.hexdigest()
             if actual.lower() != expected.lower():
-                raise ValueError("SHA-256 verification failed")
+                fail("digest_mismatch", "SHA-256 verification failed")
         temp.replace(destination)
     except Exception:
         print(file=sys.stderr, flush=True)
@@ -542,14 +839,17 @@ def install(app, asset, path):
     method = app["install_method"]
     if method == "pacman":
         if not path.name.endswith((".pkg.tar.zst", ".pkg.tar.xz")):
-            raise ValueError("pacman method requires a .pkg.tar.zst or .pkg.tar.xz asset")
-        subprocess.run(["sudo", "pacman", "-U", str(path)], check=True)
+            fail("install_unsupported_asset", "pacman method requires a .pkg.tar.zst or .pkg.tar.xz asset")
+        try:
+            subprocess.run(["sudo", "--", "pacman", "-U", str(path)], check=True)
+        except subprocess.CalledProcessError as exc:
+            fail("install_failed", f"pacman exited with status {exc.returncode}")
     elif method == "appimage":
         target = Path(app.get("target", "")).expanduser()
         if not target.is_absolute() or not target.parent.is_dir():
-            raise ValueError("AppImage target must be an absolute path in an existing directory")
+            fail("appimage_target", "AppImage target must be an absolute path in an existing directory")
         if not path.name.endswith(".AppImage"):
-            raise ValueError("AppImage method requires an asset ending in .AppImage")
+            fail("install_unsupported_asset", "AppImage method requires an asset ending in .AppImage")
         os.chmod(path, 0o755)
         if target.exists():
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -562,11 +862,21 @@ def install(app, asset, path):
         os.replace(staged, target)
         print(f"  installed: {target}")
     else:
-        raise ValueError(f"unsupported install method: {method}")
+        fail("install_unsupported_asset", f"unsupported install method: {method}")
+
+
+def manifest_write(manifest, data):
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    temp = manifest.with_name(manifest.name + ".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(manifest)
 
 
 def persist_version(manifest, app, version, build_id=""):
-    data = json.loads(manifest.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail("manifest_invalid", f"could not update the app manifest: {exc}")
     for item in data.get("apps", []):
         if item.get("name") == app["name"] and item.get("repo") == app["repo"]:
             item["installed_version"] = version
@@ -577,22 +887,19 @@ def persist_version(manifest, app, version, build_id=""):
             else:
                 item.pop("installed_build_id", None)
             break
-    temp = manifest.with_name(manifest.name + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(manifest)
+    manifest_write(manifest, data)
 
 
-def add_release_app(manifest, url, version, asset_regex, install_method, name, target, release_channel="stable"):
+def parse_release_url(url):
     parsed = urlsplit(url.strip())
     if parsed.scheme != "https" or (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
-        raise ValueError("enter an https://github.com/owner/repository URL")
+        fail("url_invalid", "enter an https://github.com/owner/repository URL")
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     if len(parts) < 2:
-        raise ValueError("URL must include both owner and repository")
+        fail("url_invalid", "URL must include both owner and repository")
     owner, repository = parts[0], parts[1]
     repository = repository.removesuffix(".git")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repository):
-        raise ValueError("repository URL contains unsupported characters")
+    validate_repo_parts(owner, repository)
     if len(parts) > 2:
         valid_release_path = (
             (len(parts) == 3 and parts[2] == "releases")
@@ -600,19 +907,26 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
             or (len(parts) == 5 and parts[2] == "releases" and parts[3] == "tag")
         )
         if not valid_release_path:
-            raise ValueError("use a repository URL, /releases/latest, or /releases/tag/<tag>")
+            fail("url_path", "use a repository URL, /releases/latest, or /releases/tag/<tag>")
+    return owner, repository
+
+
+def add_release_app(manifest, url, version, asset_regex, install_method, name, target,
+                    release_channel="stable", package=""):
+    owner, repository = parse_release_url(url)
     if not version.strip():
-        raise ValueError("installed version is required")
+        fail("version_required", "installed version is required")
     if asset_regex.strip():
         try:
             re.compile(asset_regex)
         except re.error as exc:
-            raise ValueError(f"invalid asset regular expression: {exc}") from exc
+            fail("app_bad_regex", f"invalid asset regular expression: {exc}")
     if install_method not in ("pacman", "appimage"):
-        raise ValueError("install method must be pacman or appimage")
+        fail("app_bad_method", "install method must be pacman or appimage")
     if release_channel not in ("stable", "development"):
-        raise ValueError("release channel must be stable or development")
-    app_name = name.strip() or repository
+        fail("app_bad_channel", "release channel must be stable or development")
+    app_name = validate_app_name(name.strip() or repository)
+    package_name = validate_package_name(package, required=False)
     app = {
         "name": app_name,
         "repo": f"{owner}/{repository}",
@@ -621,48 +935,56 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
         "install_method": install_method,
         "release_channel": release_channel,
     }
+    if package_name:
+        app["package"] = package_name
     if install_method == "appimage":
         target_path = Path(target).expanduser()
         if not target_path.is_absolute():
-            raise ValueError("AppImage target must be an absolute path")
+            fail("appimage_target", "AppImage target must be an absolute path")
         app["target"] = str(target_path)
 
     if manifest.exists():
-        data = json.loads(manifest.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            fail("manifest_invalid", f"app manifest is not valid JSON: {exc}")
     else:
         data = {"apps": []}
     apps = data.get("apps")
     if not isinstance(apps, list):
-        raise ValueError("manifest field 'apps' must be a list")
+        fail("manifest_invalid", "manifest field 'apps' must be a list")
     if any(existing.get("name") == app_name or existing.get("repo", "").lower() == app["repo"].lower() for existing in apps):
-        raise ValueError("an app with this name or repository is already registered")
+        fail("duplicate_app", "an app with this name or repository is already registered")
     apps.append(app)
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    temp = manifest.with_name(manifest.name + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(manifest)
+    manifest_write(manifest, data)
     return app
 
 
 def detect_installed_version(install_method, name, target, url):
     if install_method == "pacman":
-        package = name.strip()
+        package = validate_package_name(name)
         if not package:
             parsed = urlsplit(url.strip())
             parts = [part for part in parsed.path.strip("/").split("/") if part]
             package = parts[1].removesuffix(".git") if len(parts) >= 2 else ""
+        package = validate_package_name(package, required=False)
         if not package:
-            raise ValueError("enter an app/package name or GitHub repository first")
-        result = subprocess.run(["pacman", "-Q", package], check=True, capture_output=True, text=True, timeout=10)
+            fail("package_required", "enter an app/package name or GitHub repository first")
+        try:
+            result = subprocess.run(["pacman", "-Q", package], check=True, capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired as exc:
+            raise UpdaterError("version_detect_timeout", "pacman did not answer within 10 seconds") from exc
+        except subprocess.CalledProcessError as exc:
+            raise UpdaterError("package_not_installed", f"package {package!r} is not installed") from exc
         fields = result.stdout.strip().split()
         if len(fields) < 2:
-            raise ValueError(f"could not read the installed version for package {package!r}")
+            fail("version_detect_failed", f"could not read the installed version for package {package!r}")
         return {"version": fields[-1], "source": f"pacman package {fields[0]}"}
 
     if install_method == "appimage":
         appimage = Path(target).expanduser()
         if not appimage.is_absolute() or not appimage.is_file():
-            raise ValueError("enter an existing absolute AppImage path first")
+            fail("appimage_target", "enter an existing absolute AppImage path first")
         env = os.environ.copy()
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -673,49 +995,57 @@ def detect_installed_version(install_method, name, target, url):
                 timeout=8, env=env, check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise ValueError("the AppImage did not return a version within 8 seconds") from exc
+            raise UpdaterError("version_detect_timeout", "the AppImage did not return a version within 8 seconds") from exc
         output = (result.stdout + "\n" + result.stderr).strip()
         match = re.search(r"(?<![A-Za-z0-9])v?(\d+\.\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9.-]+)?)", output)
         if match:
             return {"version": match.group(1), "source": "AppImage --version"}
-        raise ValueError("the AppImage did not report a version with --version; enter it manually")
+        fail("version_not_reported", "the AppImage did not report a version with --version; enter it manually")
 
-    raise ValueError("install method must be pacman or appimage")
+    fail("app_bad_method", "install method must be pacman or appimage")
 
 
 def remove_release_app(manifest, name):
     if not manifest.exists():
-        raise ValueError("app manifest does not exist")
-    data = json.loads(manifest.read_text(encoding="utf-8"))
+        fail("manifest_missing", "app manifest does not exist")
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail("manifest_invalid", f"app manifest is not valid JSON: {exc}")
     apps = data.get("apps", [])
     if not isinstance(apps, list):
-        raise ValueError("manifest field 'apps' must be a list")
+        fail("manifest_invalid", "manifest field 'apps' must be a list")
     remaining = [app for app in apps if app.get("name") != name]
     removed = len(apps) - len(remaining)
     if removed == 0:
-        raise ValueError(f"no registered app named {name!r}")
+        fail("app_not_found", f"no registered app named {name!r}")
     data["apps"] = remaining
-    temp = manifest.with_name(manifest.name + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(manifest)
+    manifest_write(manifest, data)
     return removed
 
 
 def set_release_channel(manifest, name, release_channel):
     if release_channel not in ("stable", "development"):
-        raise ValueError("release channel must be stable or development")
+        fail("app_bad_channel", "release channel must be stable or development")
     if not manifest.exists():
-        raise ValueError("app manifest does not exist")
-    data = json.loads(manifest.read_text(encoding="utf-8"))
+        fail("manifest_missing", "app manifest does not exist")
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail("manifest_invalid", f"app manifest is not valid JSON: {exc}")
     apps = data.get("apps", [])
+    if not isinstance(apps, list):
+        fail("manifest_invalid", "manifest field 'apps' must be a list")
     app = next((item for item in apps if item.get("name") == name), None)
     if app is None:
-        raise ValueError(f"no registered app named {name!r}")
+        fail("app_not_found", f"no registered app named {name!r}")
     app["release_channel"] = release_channel
-    temp = manifest.with_name(manifest.name + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temp.replace(manifest)
+    manifest_write(manifest, data)
     return release_channel
+
+
+def json_result(payload):
+    print(json.dumps(payload, ensure_ascii=False))
 
 
 def main():
@@ -734,6 +1064,7 @@ def main():
     parser.add_argument("--install-method", choices=("pacman", "appimage"), default="pacman")
     parser.add_argument("--target", default="", help="absolute installed path, required for AppImage")
     parser.add_argument("--release-channel", choices=("stable", "development"), default="stable")
+    parser.add_argument("--package", default="", help="Pacman package name when it differs from the app name")
     args = parser.parse_args()
 
     try:
@@ -742,38 +1073,50 @@ def main():
             return 0
         if args.action == "add":
             if not args.url or not args.version:
-                raise ValueError("add requires --url and --version")
+                fail("missing_arguments", "add requires --url and --version")
             app = add_release_app(args.manifest, args.url, args.version, args.asset_regex,
                                   args.install_method, args.app_name or args.name or "", args.target,
-                                  args.release_channel)
+                                  args.release_channel, args.package)
             result = {"ok": True, "name": app["name"], "repo": app["repo"]}
-            print(json.dumps(result, ensure_ascii=False) if args.json else f"Added {app['name']} ({app['repo']})")
+            if args.json:
+                json_result(result)
+            else:
+                print(f"Added {app['name']} ({app['repo']})")
             return 0
         if args.action == "remove":
             if not args.name:
-                raise ValueError("remove requires an app name")
+                fail("missing_arguments", "remove requires an app name")
             removed = remove_release_app(args.manifest, args.name)
             result = {"ok": True, "name": args.name, "removed": removed}
-            print(json.dumps(result, ensure_ascii=False) if args.json else f"Removed {args.name} from tracking")
+            if args.json:
+                json_result(result)
+            else:
+                print(f"Removed {args.name} from tracking")
             return 0
         if args.action == "set-channel":
             if not args.name:
-                raise ValueError("set-channel requires an app name")
+                fail("missing_arguments", "set-channel requires an app name")
             channel = set_release_channel(args.manifest, args.name, args.release_channel)
             result = {"ok": True, "name": args.name, "release_channel": channel}
-            print(json.dumps(result, ensure_ascii=False) if args.json else f"Set {args.name} channel to {channel}")
+            if args.json:
+                json_result(result)
+            else:
+                print(f"Set {args.name} channel to {channel}")
             return 0
         if args.action == "detect-version":
             detected = detect_installed_version(args.install_method, args.name or "", args.target, args.url)
             result = {"ok": True, **detected}
-            print(json.dumps(result, ensure_ascii=False) if args.json else detected["version"])
+            if args.json:
+                json_result(result)
+            else:
+                print(detected["version"])
             return 0
         apps = load_apps(args.manifest)
         if args.name and args.all:
-            raise ValueError("choose an app name or --all, not both")
+            fail("missing_arguments", "choose an app name or --all, not both")
         selected = apps if args.all or args.name is None else [a for a in apps if a["name"] == args.name]
         if args.name and not selected:
-            raise ValueError(f"no manifest entry named {args.name!r}")
+            fail("app_not_found", f"no manifest entry named {args.name!r}")
         results = []
         errors = []
         for app in selected:
@@ -784,7 +1127,7 @@ def main():
                     print_report(result)
                 if args.action == "check":
                     continue
-                if args.action == "update" and result["status"] != "update available":
+                if args.action == "update" and result["status"] != "update_available":
                     if not args.json:
                         print("  skipped: no newer version detected")
                     continue
@@ -811,40 +1154,47 @@ def main():
                     install(app, asset, staged)
                     installed_version = installed_version_for(app, result["latest"])
                     persist_version(args.manifest, app, installed_version, result.get("build_id", ""))
-            except (OSError, ValueError, urllib.error.URLError, subprocess.CalledProcessError) as exc:
-                errors.append({"name": app["name"], "error": str(exc)})
+            except Exception as exc:
+                code = error_code(exc)
+                message = str(exc) or exc.__class__.__name__
+                errors.append({"name": app["name"], "code": code, "error": message})
                 results.append({
                     "name": app["name"],
                     "repo": app["repo"],
                     "current": app["installed_version"],
-                    "latest": "?",
-                    "status": "check failed",
+                    "latest": "",
+                    "status": "check_failed",
                     "release_url": f"https://github.com/{app['repo']}/releases",
                     "asset": "",
                     "asset_size": 0,
                     "digest": "",
                     "install_method": app["install_method"],
+                    "release_channel": app.get("release_channel", "stable"),
+                    "error_code": code,
+                    "error": message,
                 })
                 if not args.json:
-                    print(f"  error: {exc}", file=sys.stderr)
+                    print(f"  error: {message}", file=sys.stderr)
         if args.json:
-            print(json.dumps({
+            json_result({
                 "checked": len(results),
-                "updates": sum(r["status"] == "update available" for r in results),
+                "updates": sum(r["status"] == "update_available" for r in results),
                 "apps": [{k: v for k, v in result.items() if k not in ("release", "asset_info")} for result in results],
                 "errors": errors,
-            }, ensure_ascii=False))
-            return 0
+            })
+            return 1 if errors else 0
         if errors:
             return 1
-    except (OSError, ValueError, urllib.error.URLError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, UpdaterError, urllib.error.URLError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        code = error_code(exc)
+        message = str(exc) or exc.__class__.__name__
         if args.json:
             if args.action in ("add", "remove", "set-channel", "detect-version"):
-                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
-                return 0
-            print(json.dumps({"checked": 0, "updates": 0, "apps": [], "errors": [{"error": str(exc)}]}))
-            return 0
-        print(f"error: {exc}", file=sys.stderr)
+                json_result({"ok": False, "code": code, "error": message})
+            else:
+                json_result({"checked": 0, "updates": 0, "apps": [], "errors": [{"code": code, "error": message}]})
+        else:
+            print(f"error: {message}", file=sys.stderr)
         return 1
     return 0
 
