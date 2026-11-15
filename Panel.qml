@@ -515,7 +515,7 @@ Panel {
       setNoticeError("form_need_url")
       return false
     }
-    if (formMethod === "appimage" && formTarget.trim() === "") {
+    if ((formMethod === "appimage" || formMethod === "appdir") && formTarget.trim() === "") {
       setNoticeError("form_need_target")
       return false
     }
@@ -594,7 +594,7 @@ Panel {
       setNoticeError("helper_missing")
       return
     }
-    if (formMethod === "appimage" && formTarget.trim() === "") {
+    if ((formMethod === "appimage" || formMethod === "appdir") && formTarget.trim() === "") {
       setNoticeError("form_need_target")
       return
     }
@@ -1172,7 +1172,8 @@ Panel {
                 options: [
                   { value: "auto", label: strings.t("add.method.auto") },
                   { value: "pacman", label: strings.t("add.method.pacman") },
-                  { value: "appimage", label: strings.t("add.method.appimage") }
+                  { value: "appimage", label: strings.t("add.method.appimage") },
+                  { value: "appdir", label: strings.t("add.method.appdir") }
                 ]
                 onChanged: function(value) { root.formMethod = value }
               }
@@ -1201,9 +1202,11 @@ Panel {
             TextField {
               id: targetField
               width: parent.width
-              visible: root.formMethod === "appimage"
+              visible: root.formMethod === "appimage" || root.formMethod === "appdir"
               text: root.formTarget
-              placeholderText: strings.t("add.targetPlaceholder")
+              placeholderText: root.formMethod === "appdir"
+                ? strings.t("add.targetPlaceholderDir")
+                : strings.t("add.targetPlaceholder")
               selectByMouse: true
               onTextChanged: if (root.formTarget !== text) root.formTarget = text
             }

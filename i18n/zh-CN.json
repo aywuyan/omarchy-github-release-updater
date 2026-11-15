@@ -38,7 +38,7 @@
   "add.channel.development": "开发版（预发布）",
   "add.regexPlaceholder": "可选：文件名匹配正则（留空自动检测）",
   "add.targetPlaceholder": "AppImage 绝对路径（仅手动选择 AppImage 时需要）",
-  "add.hint": "自动模式会按本机选择安装方式，并决定 AppImage 放在哪里；版本和路径都可以留空。",
+  "add.hint": "自动模式会按本机选择安装方式，优先复用已安装的 AppImage（单文件或解压目录），并决定新 AppImage 放在哪里；版本和路径都可以留空。",
   "add.detect": "检测版本",
   "add.detecting": "检测版本中…",
   "add.submit": "添加应用",
@@ -181,5 +181,8 @@
   "status.installs": {
     "other": "%1 个应用待安装"
   },
-  "remove.rowQuestion": "移除 %1 的更新跟踪？（不会卸载）"
+  "remove.rowQuestion": "移除 %1 的更新跟踪？（不会卸载）",
+  "add.method.appdir": "已解压的 AppImage（目录）",
+  "add.targetPlaceholderDir": "已解压 AppImage 的目录，例如 ~/.local/opt/ds-bot",
+  "errors.appdir_extract_failed": "AppImage 解压失败，旧安装没有被改动。"
 }

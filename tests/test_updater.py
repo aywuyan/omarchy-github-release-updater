@@ -177,6 +177,89 @@ class FirstInstallTests(unittest.TestCase):
         self.assertEqual(result["latest"], "v0.3.6")
 
 
+class AppDirTests(unittest.TestCase):
+    """An AppImage extracted into a folder, as DS-Bot is installed."""
+
+    def setUp(self):
+        self.helper = load_helper()
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.opt = self.root / "opt"
+        self.apps = self.root / "applications"
+        self.opt.mkdir()
+        self.apps.mkdir()
+        self.helper.desktop_entry_dirs = lambda: [self.apps]
+        self.helper.appdir_roots = lambda: [self.opt]
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def make_appdir(self, name, version):
+        folder = self.opt / name
+        folder.mkdir()
+        (folder / "AppRun").write_text("#!/bin/sh\n")
+        (folder / "AppRun").chmod(0o755)
+        (folder / "dsbot.desktop").write_text(
+            f"[Desktop Entry]\nName=DS Bot\nX-AppImage-Version={version}\n")
+        return folder
+
+    def assets(self, name="DS-Bot-0.3.6-linux-x86_64.AppImage"):
+        return [{"name": name, "size": 1, "digest": "sha256:aaa", "updated_at": "",
+                 "browser_download_url": "https://example.invalid/" + name}]
+
+    def test_version_comes_from_the_appdir_desktop_file(self):
+        folder = self.make_appdir("ds-bot", "0.3.5")
+        self.assertEqual(self.helper.appdir_version(folder), "0.3.5")
+
+    def test_desktop_entry_finds_the_installed_folder(self):
+        folder = self.make_appdir("ds-bot", "0.3.5")
+        (self.apps / "dsbot.desktop").write_text(
+            f"[Desktop Entry]\nExec={folder}/dsbot --ozone-platform=wayland %U\n")
+        found = self.helper.find_existing_appdir(
+            "DS-Bot", "Fei2411/DS-Bot", ["DS-Bot-0.3.6-linux-x86_64.AppImage"])
+        self.assertEqual(found, folder)
+
+    def test_a_backup_folder_does_not_win(self):
+        real = self.make_appdir("ds-bot", "0.3.5")
+        backup = self.make_appdir("ds-bot.bak-0.3.2", "0.3.2")
+        found = self.helper.find_existing_appdir(
+            "DS-Bot", "Fei2411/DS-Bot", ["DS-Bot-0.3.6-linux-x86_64.AppImage"])
+        self.assertNotEqual(found, backup)
+        self.assertEqual(found, real)
+
+    def test_probe_prefers_the_extracted_install(self):
+        folder = self.make_appdir("ds-bot", "0.3.5")
+        self.helper.release_for = lambda app: {
+            "tag_name": "v0.3.6", "html_url": "https://github.com/Fei2411/DS-Bot/releases",
+            "assets": self.assets(),
+        }
+        result = self.helper.probe_release(
+            "https://github.com/Fei2411/DS-Bot/releases", "stable", "DS-Bot")
+        self.assertEqual(result["install_method"], "appdir")
+        self.assertEqual(result["target"], str(folder))
+        self.assertEqual(result["installed_version"], "0.3.5")
+
+    def test_update_extracts_and_replaces_the_folder(self):
+        target = self.opt / "ds-bot"
+        target.mkdir()
+        (target / "old.txt").write_text("old install")
+        appimage = self.root / "DS-Bot-0.3.6.AppImage"
+        appimage.write_text(
+            "#!/bin/sh\n"
+            "mkdir -p squashfs-root\n"
+            "printf '#!/bin/sh\\n' > squashfs-root/AppRun\n"
+            "chmod +x squashfs-root/AppRun\n"
+            "printf '[Desktop Entry]\\nX-AppImage-Version=0.3.6\\n' > squashfs-root/dsbot.desktop\n")
+        appimage.chmod(0o755)
+        self.helper.install({"install_method": "appdir", "target": str(target)}, {}, appimage)
+        self.assertTrue((target / "AppRun").is_file())
+        self.assertEqual(self.helper.appdir_version(target), "0.3.6")
+        self.assertFalse((target / "old.txt").exists())
+        backups = list(self.opt.glob("ds-bot.backup-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / "old.txt").is_file())
+
+
 class AutoProbeTests(unittest.TestCase):
     def setUp(self):
         self.helper = load_helper()
@@ -191,6 +274,7 @@ class AutoProbeTests(unittest.TestCase):
         self.helper.default_appimage_target = (
             lambda name: self.home / "Applications" / (name + ".AppImage"))
         self.helper.find_existing_appimage = lambda *args: None
+        self.helper.find_existing_appdir = lambda *args: None
         self.helper.installed_version_for = lambda app, fallback=None: ""
         self.helper.detect_installed_version = (
             lambda *args: {"version": "0.3.5", "source": "test"})

@@ -39,7 +39,7 @@
   "add.channel.development": "Developer prerelease",
   "add.regexPlaceholder": "Optional asset filename regex (blank = auto-detect)",
   "add.targetPlaceholder": "Absolute AppImage path (only for a manual AppImage choice)",
-  "add.hint": "Automatic picks the install format for this system and decides where an AppImage goes. Version and path can stay blank.",
+  "add.hint": "Automatic picks the install format for this system, reuses an installed AppImage (file or extracted folder), and decides where a new AppImage goes. Version and path can stay blank.",
   "add.detect": "Detect version",
   "add.detecting": "Detecting version…",
   "add.submit": "Add app",
@@ -183,5 +183,8 @@
     "one": "%1 app to install",
     "other": "%1 apps to install"
   },
-  "remove.rowQuestion": "Remove %1 from tracking? It stays installed."
+  "remove.rowQuestion": "Remove %1 from tracking? It stays installed.",
+  "add.method.appdir": "AppImage folder (extracted)",
+  "add.targetPlaceholderDir": "Extracted AppImage folder, e.g. ~/.local/opt/ds-bot",
+  "errors.appdir_extract_failed": "The AppImage could not be extracted; the old install was left untouched."
 }

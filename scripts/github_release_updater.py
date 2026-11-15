@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -175,8 +176,8 @@ def load_apps(manifest):
                 fail("app_bad_regex", f"invalid asset regular expression: {exc}")
         if app["release_channel"] not in ("stable", "development"):
             fail("app_bad_channel", "application field 'release_channel' must be stable or development")
-        if app["install_method"] not in ("pacman", "appimage"):
-            fail("app_bad_method", "application field 'install_method' must be pacman or appimage")
+        if app["install_method"] not in ("pacman", "appimage", "appdir"):
+            fail("app_bad_method", "application field 'install_method' must be pacman, appimage, or appdir")
         validate_app_name(app["name"])
         validate_package_name(app["package"], required=False)
         if not isinstance(app["installed_build_id"], str):
@@ -184,7 +185,7 @@ def load_apps(manifest):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", app["repo"]):
             fail("app_bad_repo", f"invalid GitHub repository: {app['repo']}")
         validate_repo_parts(*app["repo"].split("/", 1))
-        if app["install_method"] == "appimage":
+        if app["install_method"] in ("appimage", "appdir"):
             target = Path(str(app.get("target") or "")).expanduser()
             if not str(app.get("target") or "").strip() or not target.is_absolute():
                 fail("app_missing_target", f"{app['name']}: AppImage entries need an absolute target path")
@@ -541,7 +542,8 @@ def select_asset(app, release):
         pattern = re.compile(asset_regex)
         matches = [a for a in release.get("assets", []) if pattern.fullmatch(a["name"])]
     else:
-        matches = auto_detect_assets(release.get("assets", []), app["install_method"])
+        asset_method = "appimage" if app["install_method"] == "appdir" else app["install_method"]
+        matches = auto_detect_assets(release.get("assets", []), asset_method)
     if len(matches) == 0:
         if asset_regex:
             fail("asset_regex_no_match", f"no release asset matches {asset_regex!r}")
@@ -695,6 +697,10 @@ def prerelease_key(text):
 
 
 def installed_version_for(app, fallback=None):
+    if app.get("install_method") == "appdir":
+        version = appdir_version(app.get("target", ""))
+        if version:
+            return version
     if app.get("install_method") == "pacman":
         package = app.get("package") or app["name"]
         try:
@@ -877,23 +883,59 @@ def install(app, asset, path):
             subprocess.run(["sudo", "--", "pacman", "-U", str(path)], check=True)
         except subprocess.CalledProcessError as exc:
             fail("install_failed", f"pacman exited with status {exc.returncode}")
-    elif method == "appimage":
+    elif method in ("appimage", "appdir"):
         target = Path(app.get("target", "")).expanduser()
         if not target.is_absolute() or not target.parent.is_dir():
             fail("appimage_target", "AppImage target must be an absolute path in an existing directory")
         if not path.name.endswith(".AppImage"):
             fail("install_unsupported_asset", "AppImage method requires an asset ending in .AppImage")
         os.chmod(path, 0o755)
-        if target.exists():
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = target.with_name(target.name + ".backup-" + stamp)
-            shutil.copy2(target, backup)
-            print(f"  backup: {backup}")
-        staged = target.with_name(target.name + ".new")
-        shutil.copy2(path, staged)
-        os.chmod(staged, 0o755)
-        os.replace(staged, target)
-        print(f"  installed: {target}")
+        if method == "appimage":
+            if target.exists():
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup = target.with_name(target.name + ".backup-" + stamp)
+                shutil.copy2(target, backup)
+                print(f"  backup: {backup}")
+            staged = target.with_name(target.name + ".new")
+            shutil.copy2(path, staged)
+            os.chmod(staged, 0o755)
+            os.replace(staged, target)
+            print(f"  installed: {target}")
+        else:
+            staging = Path(tempfile.mkdtemp(prefix=".github-release-updater-", dir=str(target.parent)))
+            try:
+                print("  Extracting the AppImage…", file=sys.stderr, flush=True)
+                try:
+                    result = subprocess.run(
+                        [str(path), "--appimage-extract"], cwd=str(staging),
+                        capture_output=True, text=True, timeout=900, check=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise UpdaterError("appdir_extract_failed", "extracting the AppImage timed out") from exc
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or "").strip()[-300:]
+                    fail("appdir_extract_failed",
+                         f"the AppImage could not be extracted: {detail or result.returncode}")
+                extracted = staging / "squashfs-root"
+                if not (extracted / "AppRun").is_file():
+                    fail("appdir_extract_failed", "the AppImage did not contain an AppRun")
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup = target.with_name(target.name + ".backup-" + stamp)
+                moved_old = False
+                if target.exists():
+                    os.replace(target, backup)
+                    moved_old = True
+                try:
+                    os.replace(extracted, target)
+                except OSError:
+                    if moved_old and not target.exists():
+                        os.replace(backup, target)
+                    raise
+                if moved_old:
+                    print(f"  backup: {backup}")
+                print(f"  installed: {target}")
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
     else:
         fail("install_unsupported_asset", f"unsupported install method: {method}")
 
@@ -959,6 +1001,122 @@ def default_appimage_target(app_name):
     return Path.home() / "Applications" / (f"{safe or 'app'}.AppImage")
 
 
+def desktop_entry_dirs():
+    home = Path.home()
+    return [home / ".local" / "share" / "applications",
+            home / ".local" / "applications"]
+
+
+def desktop_exec_paths():
+    paths = []
+    for directory in desktop_entry_dirs():
+        if not directory.is_dir():
+            continue
+        try:
+            entries = sorted(directory.glob("*.desktop"))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                text = entry.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if not line.startswith("Exec="):
+                    continue
+                command = re.sub(r"%[fFuUdDnNickvm]", "", line[5:]).strip()
+                if command.startswith('"'):
+                    end = command.find('"', 1)
+                    command = command[1:end] if end > 0 else ""
+                executable = command.split()[0] if command else ""
+                if executable.startswith("/"):
+                    paths.append(Path(executable))
+    return paths
+
+
+def appdir_roots():
+    home = Path.home()
+    return [home / ".local" / "opt", home / "Applications", home / "AppImages",
+            home / ".local" / "share", home / "opt", Path("/opt")]
+
+
+def appdir_version(target):
+    target = Path(str(target or "")).expanduser()
+    if not target.is_dir():
+        return ""
+    candidates = list(target.glob("*.desktop"))
+    candidates += list(target.glob("usr/share/applications/*.desktop"))
+    for desktop in candidates:
+        try:
+            text = desktop.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"^X-AppImage-Version=(.+)$", text, re.MULTILINE)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return ""
+
+
+def appdir_score(path, tokens):
+    name = normalize_token(path.name)
+    if not name:
+        return 0
+    score = 0
+    for token in tokens:
+        if name == token:
+            score = max(score, 100)
+        elif name.startswith(token):
+            score = max(score, 70)
+        elif token in name:
+            score = max(score, 50)
+    if re.search(r"(bak|backup|old)", name):
+        score -= 40
+    return score
+
+
+def appdir_tokens(app_name, repo, asset_names):
+    tokens = {normalize_token(app_name), normalize_token(str(repo).split("/")[-1])}
+    for asset_name in asset_names:
+        words = []
+        for part in re.split(r"[-_.]", Path(asset_name).stem):
+            if part and part[0].isdigit():
+                break
+            words.append(part)
+        tokens.add(normalize_token("".join(words)))
+    return {token for token in tokens if token and len(token) >= 3}
+
+
+def find_existing_appdir(app_name, repo, asset_names):
+    """An extracted AppImage (an AppDir) already installed for this app."""
+    tokens = appdir_tokens(app_name, repo, asset_names)
+    if not tokens:
+        return None
+    scored = []
+    for executable in desktop_exec_paths():
+        if not executable.exists():
+            continue
+        for candidate in (executable.parent, executable.parent.parent):
+            if not candidate.is_dir() or not (candidate / "AppRun").is_file():
+                continue
+            scored.append((appdir_score(candidate, tokens) + 1000, candidate))
+    for root in appdir_roots():
+        if not root.is_dir():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for candidate in entries:
+            if not candidate.is_dir() or not (candidate / "AppRun").is_file():
+                continue
+            scored.append((appdir_score(candidate, tokens), candidate))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], len(str(item[1]))))
+    best_score, best_path = scored[0]
+    return best_path if best_score >= 40 else None
+
+
 def find_existing_appimage(app_name, repo, asset_name=""):
     """A top-level AppImage in a usual place that looks like this app."""
     tokens = {normalize_token(app_name), normalize_token(str(repo).split("/")[-1])}
@@ -995,13 +1153,18 @@ def probe_release(url, release_channel, name=""):
     appimage_asset = appimage_assets[0] if len(appimage_assets) == 1 else None
     existing = find_existing_appimage(
         display_name, repo, appimage_asset["name"] if appimage_asset else "")
+    appimage_names = [asset["name"] for asset in assets
+                      if str(asset.get("name", "")).lower().endswith(".appimage")]
+    existing_dir = find_existing_appdir(display_name, repo, appimage_names)
 
     default_target = default_appimage_target(display_name)
     target = ""
     method = ""
     asset = None
     target_is_default = False
-    if existing is not None and appimage_asset is not None:
+    if existing_dir is not None and appimage_asset is not None:
+        method, asset, target = "appdir", appimage_asset, str(existing_dir)
+    elif existing is not None and appimage_asset is not None:
         method, asset, target = "appimage", appimage_asset, str(existing)
     elif len(pacman_assets) == 1:
         method, asset = "pacman", pacman_assets[0]
@@ -1022,6 +1185,8 @@ def probe_release(url, release_channel, name=""):
         installed_version = installed_version_for(
             {"install_method": "pacman", "name": display_name,
              "package": "", "installed_version": ""})
+    elif method == "appdir":
+        installed_version = appdir_version(target)
     elif target:
         try:
             installed_version = detect_installed_version("appimage", "", target, "")["version"]
@@ -1047,8 +1212,8 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
             re.compile(asset_regex)
         except re.error as exc:
             fail("app_bad_regex", f"invalid asset regular expression: {exc}")
-    if install_method not in ("pacman", "appimage"):
-        fail("app_bad_method", "install method must be pacman or appimage")
+    if install_method not in ("pacman", "appimage", "appdir"):
+        fail("app_bad_method", "install method must be pacman, appimage, or appdir")
     if release_channel not in ("stable", "development"):
         fail("app_bad_channel", "release channel must be stable or development")
     app_name = validate_app_name(name.strip() or repository)
@@ -1063,7 +1228,7 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
     }
     if package_name:
         app["package"] = package_name
-    if install_method == "appimage":
+    if install_method in ("appimage", "appdir"):
         target_path = Path(target).expanduser()
         if not target_path.is_absolute():
             fail("appimage_target", "AppImage target must be an absolute path")
@@ -1106,6 +1271,12 @@ def detect_installed_version(install_method, name, target, url):
         if len(fields) < 2:
             fail("version_detect_failed", f"could not read the installed version for package {package!r}")
         return {"version": fields[-1], "source": f"pacman package {fields[0]}"}
+
+    if install_method == "appdir":
+        version = appdir_version(target)
+        if version:
+            return {"version": version, "source": "extracted AppImage"}
+        fail("version_detect_failed", "the extracted AppImage does not report a version; enter it manually")
 
     if install_method == "appimage":
         appimage = Path(target).expanduser()
@@ -1187,7 +1358,7 @@ def main():
     parser.add_argument("--url", default="", help="GitHub repository or Releases URL (add action)")
     parser.add_argument("--version", default="", help="currently installed version (add action)")
     parser.add_argument("--asset-regex", default="", help="optional regex selecting one release asset (add action)")
-    parser.add_argument("--install-method", choices=("auto", "pacman", "appimage"), default="auto")
+    parser.add_argument("--install-method", choices=("auto", "pacman", "appimage", "appdir"), default="auto")
     parser.add_argument("--target", default="", help="absolute installed path, required for AppImage")
     parser.add_argument("--release-channel", choices=("stable", "development"), default="stable")
     parser.add_argument("--package", default="", help="Pacman package name when it differs from the app name")

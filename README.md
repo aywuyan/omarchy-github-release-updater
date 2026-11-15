@@ -16,8 +16,10 @@ fails, enter the version manually.
 
 Paste a repository URL. The add form starts in **Automatic**: it reads the latest
 release, picks Pacman when the release carries an Arch package, and otherwise
-picks AppImage. For AppImage it reuses an existing file in `~/Applications`,
-`~/AppImages`, `~/Downloads`, `~/.local/bin`, or `~/bin`, and puts a new one at
+picks AppImage. An existing install wins over a fresh one: an extracted AppImage
+folder is found through its desktop entry or `~/.local/opt`, `~/Applications`,
+`~/AppImages`, or `/opt`; a plain AppImage is found in `~/Applications`,
+`~/AppImages`, `~/Downloads`, `~/.local/bin`, or `~/bin`. A new AppImage goes to
 `~/Applications/<name>.AppImage`. The name can stay blank (the repository name is
 used); the version, path, and asset regex can stay blank too.
 
@@ -64,6 +66,11 @@ The helper supports two install methods:
   `sudo pacman -U` interactively.
 - `appimage` for an AppImage asset. Set `target` to its absolute installed path;
   the old file is backed up before replacement.
+- `appdir` for an AppImage extracted into a folder (an `AppRun` plus the app's
+  files, as `~/.local/opt/ds-bot`). The updater downloads the new AppImage,
+  extracts it, and replaces the folder, keeping the old one as a backup. An
+  installation found this way is detected through the desktop entry that launches
+  it or through the usual folders.
 
 ### Panel settings
 
