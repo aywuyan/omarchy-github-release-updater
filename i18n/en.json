@@ -44,8 +44,6 @@
   "add.detecting": "Detecting version…",
   "add.submit": "Add app",
   "add.adding": "Adding…",
-  "remove.title": "Remove app from tracking?",
-  "remove.body": "Remove %1 from GitHub checks? This does not uninstall the app.",
   "remove.cancel": "Cancel",
   "remove.confirm": "Remove",
   "notice.removing": "Removing %1 from tracking…",
@@ -175,7 +173,6 @@
   "app.install": "Install…",
   "app.notInstalled": "not installed",
   "notice.addWithoutVersion": "No installed version was detected. Added anyway; the version is recorded after the first install.",
-  "notice.addedWithoutVersion": "Added %1 as not installed. Its version is recorded after the first install.",
   "add.method.auto": "Automatic (recommended)",
   "notice.addedAuto": "Added %1 (%2).",
   "notice.addedAutoPending": "Added %1 (%2); the version is recorded after the first install.",
@@ -185,5 +182,6 @@
   "status.installs": {
     "one": "%1 app to install",
     "other": "%1 apps to install"
-  }
+  },
+  "remove.rowQuestion": "Remove %1 from tracking? It stays installed."
 }

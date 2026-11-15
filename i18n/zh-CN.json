@@ -43,8 +43,6 @@
   "add.detecting": "检测版本中…",
   "add.submit": "添加应用",
   "add.adding": "正在添加…",
-  "remove.title": "从跟踪列表中移除此应用？",
-  "remove.body": "移除 %1 的 GitHub 更新跟踪？这不会卸载应用。",
   "remove.cancel": "取消",
   "remove.confirm": "移除",
   "notice.removing": "正在移除 %1 的跟踪登记…",
@@ -174,7 +172,6 @@
   "app.install": "安装…",
   "app.notInstalled": "尚未安装",
   "notice.addWithoutVersion": "没有检测到已安装版本，已先添加；首次安装后会自动记录版本。",
-  "notice.addedWithoutVersion": "已添加 %1（尚未安装）；首次安装后会自动记录版本。",
   "add.method.auto": "自动（推荐）",
   "notice.addedAuto": "已添加 %1（%2）。",
   "notice.addedAutoPending": "已添加 %1（%2）；版本会在首次安装后记录。",
@@ -183,5 +180,6 @@
   "errors.no_supported_asset": "这个发行版没有 Arch 能安装的文件，必要时可手动改安装方式。",
   "status.installs": {
     "other": "%1 个应用待安装"
-  }
+  },
+  "remove.rowQuestion": "移除 %1 的更新跟踪？（不会卸载）"
 }

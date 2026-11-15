@@ -54,7 +54,6 @@ Panel {
   property bool switchingChannel: false
   property bool addAfterDetect: false
   property bool addWithoutVersion: false
-  property bool addingWithoutVersion: false
 
   // ---- form drafts -----------------------------------------------------
   property string formUrl: ""
@@ -283,7 +282,7 @@ Panel {
   }
 
   // ---- checking --------------------------------------------------------
-  function refresh() {
+  function refresh(queue) {
     if (!helperPath) {
       state = "error"
       statusCode = "helper_missing"
@@ -291,7 +290,9 @@ Panel {
       return
     }
     if (checkProc.running) {
-      pendingRefresh = true
+      // Only an add/remove/channel change has to be re-checked after the run
+      // already in flight; opening the panel or the timer can wait.
+      if (queue === true) pendingRefresh = true
       return
     }
     pendingRefresh = false
@@ -319,9 +320,10 @@ Panel {
     } else {
       applyCheck(out)
     }
-    // A refresh requested while this run was in flight is already answered by
-    // its result; running a second check right away would only burn API calls.
-    pendingRefresh = false
+    if (pendingRefresh) {
+      pendingRefresh = false
+      Qt.callLater(root.refresh)
+    }
   }
 
   function applyCheck(raw) {
@@ -437,6 +439,7 @@ Panel {
     apps = apps.filter(function(app) { return app.name !== result.name })
     recount()
     setNotice("notice.removed", result.name)
+    root.refresh(true)
   }
 
   function setAppChannel(name, channel) {
@@ -457,7 +460,7 @@ Panel {
       return
     }
     setNotice("notice.channel", result.name)
-    root.refresh()
+    root.refresh(true)
   }
 
   function parseJson(raw) {
@@ -496,7 +499,6 @@ Panel {
       detectVersion(true)
       return
     }
-    root.addingWithoutVersion = blankVersion || formVersion.trim() === ""
     adding = true
     setNotice("notice.adding")
     addProc.reset()
@@ -531,23 +533,18 @@ Panel {
     formTarget = ""
     formChannel = "stable"
     formMethod = "auto"
-    if (result.install_method) {
-      var label = strings.t("add.method." + String(result.install_method))
-      var path = String(result.target || "")
-      if (path !== "") {
-        var home = Quickshell.env("HOME")
-        if (home && path.indexOf(home + "/") === 0) path = "~" + path.slice(home.length)
-        setNotice(result.installed_version === "" ? "notice.addedAutoPathPending" : "notice.addedAutoPath",
-          result.name, label, path)
-      } else {
-        setNotice(result.installed_version === "" ? "notice.addedAutoPending" : "notice.addedAuto",
-          result.name, label)
-      }
+    var label = strings.t("add.method." + String(result.install_method || "auto"))
+    var path = String(result.target || "")
+    if (path !== "") {
+      var home = Quickshell.env("HOME")
+      if (home && path.indexOf(home + "/") === 0) path = "~" + path.slice(home.length)
+      setNotice(result.installed_version === "" ? "notice.addedAutoPathPending" : "notice.addedAutoPath",
+        result.name, label, path)
     } else {
-      setNotice(root.addingWithoutVersion ? "notice.addedWithoutVersion" : "notice.added", result.name)
+      setNotice(result.installed_version === "" ? "notice.addedAutoPending" : "notice.addedAuto",
+        result.name, label)
     }
-    root.addingWithoutVersion = false
-    root.refresh()
+    root.refresh(true)
   }
 
   function detectVersion(forAdd) {
@@ -1038,63 +1035,6 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            // Inline removal confirmation: no second surface, so the panel
-            // keeps the keyboard and the bar can still be clicked.
-            BorderSurface {
-              visible: root.pendingRemove !== ""
-              width: parent.width
-              padding: Style.spacing.xxl
-              radius: Style.cornerRadius
-              color: "transparent"
-              borderSpec: Border.controlSpec("normal", Commons.Color.popups.text, Commons.Color.accent)
-
-              Column {
-                width: parent.width - parent.leftPadding - parent.rightPadding
-                spacing: Style.spacing.sm
-
-                Text {
-                  textFormat: Text.PlainText
-                  width: parent.width
-                  text: strings.t("remove.title")
-                  color: Commons.Color.popups.text
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  width: parent.width
-                  text: strings.t("remove.body").arg(root.pendingRemove)
-                  color: Commons.Color.muted
-                  font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
-                }
-                Row {
-                  width: parent.width
-                  spacing: Style.spacing.controlGap
-                  Item { width: parent.width - cancelRemove.width - confirmRemove.width - parent.spacing * 2; height: 1 }
-                  Button {
-                    id: cancelRemove
-                    text: strings.t("remove.cancel")
-                    focusable: true
-                    fontSize: Style.font.caption
-                    verticalPadding: Style.spacing.controlPaddingY
-                    onClicked: root.pendingRemove = ""
-                  }
-                  Button {
-                    id: confirmRemove
-                    text: strings.t("remove.confirm")
-                    enabled: !root.removing
-                    focusable: true
-                    fontSize: Style.font.caption
-                    verticalPadding: Style.spacing.controlPaddingY
-                    onClicked: root.removeApp(root.pendingRemove)
-                  }
-                }
-              }
-            }
-
             PanelSectionHeader {
               text: strings.t("panel.registered")
               foreground: Commons.Color.popups.text
@@ -1477,6 +1417,7 @@ Panel {
     readonly property bool hasUpdate: !!app
       && (app.status === "update_available" || app.status === "not_installed")
     readonly property bool notInstalled: !!app && app.status === "not_installed"
+    readonly property bool confirming: !!app && root.pendingRemove === app.name
     readonly property string rowStatus: app ? String(app.status || "") : ""
     readonly property string versionLine: app
       ? (String(app.current || "") !== "" ? String(app.current) : strings.t("app.notInstalled"))
@@ -1550,7 +1491,7 @@ Panel {
 
       Row {
         spacing: Style.spacing.sm
-        visible: !!row.app
+        visible: !!row.app && !row.confirming
 
         Button {
           visible: row.hasUpdate
@@ -1580,6 +1521,38 @@ Panel {
           fontSize: Style.font.caption
           verticalPadding: Style.spacing.xs
           onClicked: root.askRemove(row.app.name)
+        }
+      }
+
+      Row {
+        width: parent.width
+        spacing: Style.spacing.controlGap
+        visible: row.confirming
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width - rowCancelRemove.width - rowConfirmRemove.width - parent.spacing * 2
+          text: strings.t("remove.rowQuestion").arg(row.app ? row.app.name : "")
+          color: Commons.Color.muted
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        Button {
+          id: rowCancelRemove
+          text: strings.t("remove.cancel")
+          fontSize: Style.font.caption
+          verticalPadding: Style.spacing.xs
+          onClicked: root.pendingRemove = ""
+        }
+        Button {
+          id: rowConfirmRemove
+          text: strings.t("remove.confirm")
+          enabled: !root.removing
+          fontSize: Style.font.caption
+          verticalPadding: Style.spacing.xs
+          onClicked: root.removeApp(row.app ? row.app.name : "")
         }
       }
     }
