@@ -862,6 +862,16 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): void { root.refresh() }
+
+    // Diagnostics: which build and defaults the running panel really has.
+    function about(): string {
+      return JSON.stringify({
+        version: root.pluginVersion,
+        formMethod: root.formMethod,
+        interval: root.configuredIntervalHours,
+        autoSupported: root.formMethod === "auto"
+      })
+    }
   }
 
   // ---- card ------------------------------------------------------------
