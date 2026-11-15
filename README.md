@@ -14,15 +14,21 @@ fails, enter the version manually.
 
 ## First add
 
-Paste a repository URL and leave the app name blank to use the repository name.
-The installed version is optional: **Add app** first tries to read it from Pacman
-or from the AppImage's `--version`. When nothing can be detected the app is added
-as **not installed**, and its version is recorded after the first install. The add
-form does not contact GitHub; the first check runs right after it is saved.
+Paste a repository URL. The add form starts in **Automatic**: it reads the latest
+release, picks Pacman when the release carries an Arch package, and otherwise
+picks AppImage. For AppImage it reuses an existing file in `~/Applications`,
+`~/AppImages`, `~/Downloads`, `~/.local/bin`, or `~/bin`, and puts a new one at
+`~/Applications/<name>.AppImage`. The name can stay blank (the repository name is
+used); the version, path, and asset regex can stay blank too.
 
-A repository that publishes only `.deb`, `.zip`, or `.exe` files has nothing this
-plugin can install. Pick **AppImage** when the release carries an `.AppImage`, and
-set its absolute installed path.
+The installed version is optional either way: it is detected from Pacman or from
+the AppImage's `--version`; when nothing can be detected the app is added as
+**not installed**, and its version is recorded after the first install.
+
+Automatic only accepts a release Arch can install. A repository that publishes
+just `.deb`, `.zip`, or `.exe` files is refused with the file types it found.
+Explicit **Pacman** and **AppImage** remain in the install-format menu for a
+different package name, a different AppImage location, or an asset regex.
 
 ## Configure
 

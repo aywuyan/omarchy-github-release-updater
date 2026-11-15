@@ -177,6 +177,71 @@ class FirstInstallTests(unittest.TestCase):
         self.assertEqual(result["latest"], "v0.3.6")
 
 
+class AutoProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = load_helper()
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.release = {
+            "tag_name": "v0.3.6",
+            "html_url": "https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.6",
+            "assets": [],
+        }
+        self.helper.release_for = lambda app: self.release
+        self.helper.default_appimage_target = (
+            lambda name: self.home / "Applications" / (name + ".AppImage"))
+        self.helper.find_existing_appimage = lambda *args: None
+        self.helper.installed_version_for = lambda app, fallback=None: ""
+        self.helper.detect_installed_version = (
+            lambda *args: {"version": "0.3.5", "source": "test"})
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def asset(self, name):
+        return {"name": name, "size": 1, "digest": "sha256:" + name, "updated_at": "",
+                "browser_download_url": "https://example.invalid/" + name}
+
+    def test_appimage_release_gets_a_default_path(self):
+        self.release["assets"] = [self.asset("DS-Bot-0.3.6-linux-x86_64.AppImage")]
+        result = self.helper.probe_release(
+            "https://github.com/Fei2411/DS-Bot/releases", "stable", "DS-Bot")
+        self.assertEqual(result["install_method"], "appimage")
+        self.assertEqual(result["target"], str(self.home / "Applications" / "DS-Bot.AppImage"))
+        self.assertTrue(result["target_is_default"])
+
+    def test_pacman_is_preferred_when_available(self):
+        self.release["assets"] = [
+            self.asset("DS-Bot-0.3.6-linux-x86_64.AppImage"),
+            self.asset("DS-Bot-0.3.6-x86_64.pkg.tar.zst"),
+        ]
+        result = self.helper.probe_release(
+            "https://github.com/Fei2411/DS-Bot/releases", "stable", "DS-Bot")
+        self.assertEqual(result["install_method"], "pacman")
+        self.assertEqual(result["target"], "")
+
+    def test_an_existing_appimage_is_reused(self):
+        self.release["assets"] = [self.asset("DS-Bot-0.3.6-linux-x86_64.AppImage")]
+        existing = self.home / "Applications" / "DS-Bot.AppImage"
+        existing.parent.mkdir(parents=True)
+        existing.write_text("x")
+        self.helper.find_existing_appimage = lambda *args: existing
+        result = self.helper.probe_release(
+            "https://github.com/Fei2411/DS-Bot/releases", "stable", "DS-Bot")
+        self.assertEqual(result["install_method"], "appimage")
+        self.assertEqual(result["target"], str(existing))
+        self.assertFalse(result["target_is_default"])
+        self.assertEqual(result["installed_version"], "0.3.5")
+
+    def test_release_without_an_installable_asset(self):
+        self.release["assets"] = [self.asset("DS-Bot-0.3.6-linux-amd64.deb"),
+                                  self.asset("DS-Bot-0.3.6-win-x64.exe")]
+        with self.assertRaises(self.helper.UpdaterError) as caught:
+            self.helper.probe_release(
+                "https://github.com/Fei2411/DS-Bot/releases", "stable", "DS-Bot")
+        self.assertEqual(caught.exception.code, "no_supported_asset")
+
+
 class AssetSelectionTests(unittest.TestCase):
     def setUp(self):
         self.helper = load_helper()

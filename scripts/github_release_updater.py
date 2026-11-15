@@ -944,6 +944,101 @@ def parse_release_url(url):
     return owner, repository
 
 
+def normalize_token(value):
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def appimage_search_dirs():
+    home = Path.home()
+    return [home / "Applications", home / "AppImages", home / "Downloads",
+            home / ".local" / "bin", home / "bin"]
+
+
+def default_appimage_target(app_name):
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(app_name or "").strip()).strip("-")
+    return Path.home() / "Applications" / (f"{safe or 'app'}.AppImage")
+
+
+def find_existing_appimage(app_name, repo, asset_name=""):
+    """A top-level AppImage in a usual place that looks like this app."""
+    tokens = {normalize_token(app_name), normalize_token(str(repo).split("/")[-1])}
+    tokens.discard("")
+    wanted = normalize_token(Path(asset_name).stem) if asset_name else ""
+    matches = []
+    for directory in appimage_search_dirs():
+        if not directory.is_dir():
+            continue
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            if not path.name.lower().endswith(".appimage") or not path.is_file():
+                continue
+            name = normalize_token(path.name[:-len(".AppImage")])
+            if wanted and name == wanted:
+                return path
+            if any(token and token in name for token in tokens):
+                matches.append(path)
+    return matches[0] if len(matches) == 1 else None
+
+
+def probe_release(url, release_channel, name=""):
+    """Work out how this system would install the release behind `url`."""
+    owner, repository = parse_release_url(url)
+    repo = f"{owner}/{repository}"
+    release = release_for({"repo": repo, "release_channel": release_channel})
+    assets = release.get("assets", [])
+    pacman_assets = collapse_identical_digests(auto_detect_assets(assets, "pacman"))
+    appimage_assets = collapse_identical_digests(auto_detect_assets(assets, "appimage"))
+    display_name = str(name or "").strip() or repository
+    appimage_asset = appimage_assets[0] if len(appimage_assets) == 1 else None
+    existing = find_existing_appimage(
+        display_name, repo, appimage_asset["name"] if appimage_asset else "")
+
+    default_target = default_appimage_target(display_name)
+    target = ""
+    method = ""
+    asset = None
+    target_is_default = False
+    if existing is not None and appimage_asset is not None:
+        method, asset, target = "appimage", appimage_asset, str(existing)
+    elif len(pacman_assets) == 1:
+        method, asset = "pacman", pacman_assets[0]
+    elif appimage_asset is not None:
+        method, asset, target = "appimage", appimage_asset, str(default_target)
+        target_is_default = True
+    elif len(pacman_assets) > 1 or len(appimage_assets) > 1:
+        choices = ", ".join(a["name"] for a in (pacman_assets + appimage_assets)[:8])
+        fail("asset_ambiguous", f"several release assets fit this system; found: {choices}")
+    else:
+        extensions = sorted({Path(a.get("name", "")).suffix.lower() for a in assets if a.get("name")})
+        published = ", ".join(extensions) if extensions else "no assets"
+        fail("no_supported_asset",
+             f"this release has nothing Arch can install; it publishes {published}")
+
+    installed_version = ""
+    if method == "pacman":
+        installed_version = installed_version_for(
+            {"install_method": "pacman", "name": display_name,
+             "package": "", "installed_version": ""})
+    elif target:
+        try:
+            installed_version = detect_installed_version("appimage", "", target, "")["version"]
+        except (OSError, ValueError, UpdaterError, subprocess.SubprocessError):
+            installed_version = ""
+    return {
+        "repo": repo,
+        "install_method": method,
+        "target": target,
+        "target_is_default": target_is_default,
+        "asset": asset["name"] if asset else "",
+        "installed_version": installed_version,
+        "latest": release.get("tag_name", ""),
+        "release_url": release.get("html_url", ""),
+    }
+
+
 def add_release_app(manifest, url, version, asset_regex, install_method, name, target,
                     release_channel="stable", package=""):
     owner, repository = parse_release_url(url)
@@ -1092,7 +1187,7 @@ def main():
     parser.add_argument("--url", default="", help="GitHub repository or Releases URL (add action)")
     parser.add_argument("--version", default="", help="currently installed version (add action)")
     parser.add_argument("--asset-regex", default="", help="optional regex selecting one release asset (add action)")
-    parser.add_argument("--install-method", choices=("pacman", "appimage"), default="pacman")
+    parser.add_argument("--install-method", choices=("auto", "pacman", "appimage"), default="auto")
     parser.add_argument("--target", default="", help="absolute installed path, required for AppImage")
     parser.add_argument("--release-channel", choices=("stable", "development"), default="stable")
     parser.add_argument("--package", default="", help="Pacman package name when it differs from the app name")
@@ -1105,10 +1200,30 @@ def main():
         if args.action == "add":
             if not args.url:
                 fail("missing_arguments", "add requires --url")
-            app = add_release_app(args.manifest, args.url, args.version, args.asset_regex,
-                                  args.install_method, args.app_name or args.name or "", args.target,
+            method = args.install_method
+            target = args.target
+            version = args.version
+            resolved = None
+            if method == "auto":
+                resolved = probe_release(args.url, args.release_channel,
+                                         args.app_name or args.name or "")
+                method = resolved["install_method"]
+                if not target:
+                    target = resolved["target"]
+                if not version:
+                    version = resolved["installed_version"]
+                if resolved["target_is_default"] and target:
+                    Path(target).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            app = add_release_app(args.manifest, args.url, version, args.asset_regex,
+                                  method, args.app_name or args.name or "", target,
                                   args.release_channel, args.package)
-            result = {"ok": True, "name": app["name"], "repo": app["repo"]}
+            result = {"ok": True, "name": app["name"], "repo": app["repo"],
+                      "install_method": app["install_method"],
+                      "target": app.get("target", ""),
+                      "installed_version": app["installed_version"]}
+            if resolved:
+                result["latest"] = resolved["latest"]
+                result["asset"] = resolved["asset"]
             if args.json:
                 json_result(result)
             else:
@@ -1215,7 +1330,8 @@ def main():
         if args.json:
             json_result({
                 "checked": len(results),
-                "updates": sum(r["status"] in ("update_available", "not_installed") for r in results),
+                "updates": sum(r["status"] == "update_available" for r in results),
+                "installs": sum(r["status"] == "not_installed" for r in results),
                 "apps": [{k: v for k, v in result.items() if k not in ("release", "asset_info")} for result in results],
                 "errors": errors,
             })

@@ -24,6 +24,7 @@ Panel {
   property var apps: []
   property int checkedCount: 0
   property int updateCount: 0
+  property int installCount: 0
   property string state: "idle"          // idle | checking | ready | updates | setup | error
   property string statusCode: ""
   property string statusDetail: ""
@@ -39,6 +40,7 @@ Panel {
   property string noticeKey: ""
   property string noticeArg1: ""
   property string noticeArg2: ""
+  property string noticeArg3: ""
   property string noticeCode: ""
   property string noticeDetail: ""
   property bool noticeError: false
@@ -61,7 +63,7 @@ Panel {
   property string formVersion: ""
   property string formRegex: ""
   property string formTarget: ""
-  property string formMethod: "pacman"
+  property string formMethod: "auto"
   property string formChannel: "stable"
 
   // ---- settings --------------------------------------------------------
@@ -144,7 +146,14 @@ Panel {
     }
     if (state === "checking") return strings.t("status.checking")
     if (state === "setup") return strings.t("status.setup")
-    if (state === "updates") return strings.tn("status.updates", updateCount).arg(Commons.I18n.formatNumber(updateCount))
+    if (state === "updates") {
+      if (updateCount > 0 && installCount > 0)
+        return strings.tn("status.updates", updateCount).arg(Commons.I18n.formatNumber(updateCount))
+          + " · " + strings.tn("status.installs", installCount).arg(Commons.I18n.formatNumber(installCount))
+      if (installCount > 0)
+        return strings.tn("status.installs", installCount).arg(Commons.I18n.formatNumber(installCount))
+      return strings.tn("status.updates", updateCount).arg(Commons.I18n.formatNumber(updateCount))
+    }
     if (state === "ready") return strings.t("status.ready")
     return strings.t("status.idle")
   }
@@ -169,7 +178,18 @@ Panel {
     var text = strings.t(noticeKey)
     if (noticeArg1 !== "") text = text.arg(noticeArg1)
     if (noticeArg2 !== "") text = text.arg(noticeArg2)
+    if (noticeArg3 !== "") text = text.arg(noticeArg3)
     return text
+  }
+
+  // Asset errors carry the matching names or the release's file types in the
+  // helper's detail; show it under the localized message.
+  readonly property string noticeLongText: {
+    if (noticeCode !== "" && noticeDetail !== ""
+        && (noticeCode === "asset_ambiguous" || noticeCode === "asset_regex_no_match"
+            || noticeCode === "no_supported_asset"))
+      return noticeText + "\n" + noticeDetail
+    return noticeText
   }
 
   readonly property string settingsStatusText: {
@@ -182,10 +202,11 @@ Panel {
     return settingsArg !== "" ? text.arg(settingsArg) : text
   }
 
-  function setNotice(key, arg1, arg2) {
+  function setNotice(key, arg1, arg2, arg3) {
     noticeKey = key
     noticeArg1 = arg1 === undefined ? "" : String(arg1)
     noticeArg2 = arg2 === undefined ? "" : String(arg2)
+    noticeArg3 = arg3 === undefined ? "" : String(arg3)
     noticeCode = ""
     noticeDetail = ""
     noticeError = false
@@ -195,6 +216,7 @@ Panel {
     noticeKey = ""
     noticeArg1 = ""
     noticeArg2 = ""
+    noticeArg3 = ""
     noticeCode = code || "unknown"
     noticeDetail = detail || ""
     noticeError = true
@@ -315,6 +337,7 @@ Panel {
     apps = Array.isArray(result.apps) ? result.apps : []
     checkedCount = Number(result.checked || 0)
     updateCount = Number(result.updates || 0)
+    installCount = Number(result.installs || 0)
     var errors = Array.isArray(result.errors) ? result.errors : []
     if (cursor >= apps.length) cursor = -1
     if (errors.length > 0) {
@@ -325,7 +348,7 @@ Panel {
       state = "setup"
       statusCode = ""
       statusDetail = ""
-    } else if (updateCount > 0) {
+    } else if (updateCount > 0 || installCount > 0) {
       state = "updates"
       statusCode = ""
       statusDetail = ""
@@ -338,11 +361,15 @@ Panel {
 
   function recount() {
     var updates = 0
-    for (var i = 0; i < apps.length; i++)
-      if (apps[i].status === "update_available" || apps[i].status === "not_installed") updates += 1
+    var installs = 0
+    for (var i = 0; i < apps.length; i++) {
+      if (apps[i].status === "update_available") updates += 1
+      else if (apps[i].status === "not_installed") installs += 1
+    }
     updateCount = updates
+    installCount = installs
     checkedCount = apps.length
-    state = apps.length === 0 ? "setup" : (updates > 0 ? "updates" : "ready")
+    state = apps.length === 0 ? "setup" : (updates > 0 || installs > 0 ? "updates" : "ready")
   }
 
   // ---- cursor + row actions -------------------------------------------
@@ -465,11 +492,11 @@ Panel {
     if (!formReady()) return
     var blankVersion = root.addWithoutVersion
     root.addWithoutVersion = false
-    if (formVersion.trim() === "" && !blankVersion) {
+    if (formVersion.trim() === "" && root.formMethod !== "auto" && !blankVersion) {
       detectVersion(true)
       return
     }
-    root.addingWithoutVersion = blankVersion
+    root.addingWithoutVersion = blankVersion || formVersion.trim() === ""
     adding = true
     setNotice("notice.adding")
     addProc.reset()
@@ -503,8 +530,22 @@ Panel {
     formRegex = ""
     formTarget = ""
     formChannel = "stable"
-    formMethod = "pacman"
-    setNotice(root.addingWithoutVersion ? "notice.addedWithoutVersion" : "notice.added", result.name)
+    formMethod = "auto"
+    if (result.install_method) {
+      var label = strings.t("add.method." + String(result.install_method))
+      var path = String(result.target || "")
+      if (path !== "") {
+        var home = Quickshell.env("HOME")
+        if (home && path.indexOf(home + "/") === 0) path = "~" + path.slice(home.length)
+        setNotice(result.installed_version === "" ? "notice.addedAutoPathPending" : "notice.addedAutoPath",
+          result.name, label, path)
+      } else {
+        setNotice(result.installed_version === "" ? "notice.addedAutoPending" : "notice.addedAuto",
+          result.name, label)
+      }
+    } else {
+      setNotice(root.addingWithoutVersion ? "notice.addedWithoutVersion" : "notice.added", result.name)
+    }
     root.addingWithoutVersion = false
     root.refresh()
   }
@@ -980,7 +1021,7 @@ Panel {
               textFormat: Text.PlainText
               width: parent.width
               visible: root.noticeText !== "" && root.noticeArea === "list"
-              text: root.noticeText
+              text: root.noticeLongText
               color: root.noticeError ? Commons.Color.urgent : Commons.Color.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -1128,6 +1169,7 @@ Panel {
                 label: strings.t("add.method")
                 value: root.formMethod
                 options: [
+                  { value: "auto", label: strings.t("add.method.auto") },
                   { value: "pacman", label: strings.t("add.method.pacman") },
                   { value: "appimage", label: strings.t("add.method.appimage") }
                 ]
@@ -1179,10 +1221,15 @@ Panel {
               width: parent.width
               spacing: Style.spacing.controlGap
 
-              Item { width: parent.width - detectButton.width - addButton.width - parent.spacing * 2; height: 1 }
+              Item {
+                width: parent.width - addButton.width - parent.spacing
+                  - (detectButton.visible ? detectButton.width + parent.spacing : 0)
+                height: 1
+              }
 
               Button {
                 id: detectButton
+                visible: root.formMethod !== "auto"
                 text: root.detecting ? strings.t("add.detecting") : strings.t("add.detect")
                 enabled: !root.adding && !root.detecting
                 focusable: true
@@ -1206,7 +1253,7 @@ Panel {
               textFormat: Text.PlainText
               width: parent.width
               visible: root.noticeText !== "" && root.noticeArea === "add"
-              text: root.noticeText
+              text: root.noticeLongText
               color: root.noticeError ? Commons.Color.urgent : Commons.Color.muted
               font.family: Style.font.family
               font.pixelSize: Style.font.caption

@@ -38,8 +38,8 @@
   "add.channel.stable": "Stable",
   "add.channel.development": "Developer prerelease",
   "add.regexPlaceholder": "Optional asset filename regex (blank = auto-detect)",
-  "add.targetPlaceholder": "Absolute AppImage path, e.g. ~/Applications/App.AppImage",
-  "add.hint": "Adding saves locally. Leave the version blank and it is detected from Pacman or the AppImage when possible; otherwise it is recorded after the first install. GitHub checks run afterward, and a token is only needed when the API is rate limited.",
+  "add.targetPlaceholder": "Absolute AppImage path (only for a manual AppImage choice)",
+  "add.hint": "Automatic picks the install format for this system and decides where an AppImage goes. Version and path can stay blank.",
   "add.detect": "Detect version",
   "add.detecting": "Detecting version…",
   "add.submit": "Add app",
@@ -175,5 +175,15 @@
   "app.install": "Install…",
   "app.notInstalled": "not installed",
   "notice.addWithoutVersion": "No installed version was detected. Added anyway; the version is recorded after the first install.",
-  "notice.addedWithoutVersion": "Added %1 as not installed. Its version is recorded after the first install."
+  "notice.addedWithoutVersion": "Added %1 as not installed. Its version is recorded after the first install.",
+  "add.method.auto": "Automatic (recommended)",
+  "notice.addedAuto": "Added %1 (%2).",
+  "notice.addedAutoPending": "Added %1 (%2); the version is recorded after the first install.",
+  "notice.addedAutoPath": "Added %1 (%2 → %3).",
+  "notice.addedAutoPathPending": "Added %1 (%2 → %3); the version is recorded after the first install.",
+  "errors.no_supported_asset": "This release has no file Arch can install. Choose another install format if you know better.",
+  "status.installs": {
+    "one": "%1 app to install",
+    "other": "%1 apps to install"
+  }
 }

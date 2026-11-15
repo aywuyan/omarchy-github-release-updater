@@ -37,8 +37,8 @@
   "add.channel.stable": "稳定版",
   "add.channel.development": "开发版（预发布）",
   "add.regexPlaceholder": "可选：文件名匹配正则（留空自动检测）",
-  "add.targetPlaceholder": "AppImage 安装路径，例如 ~/Applications/App.AppImage",
-  "add.hint": "添加只保存到本地。版本可以留空：能自动检测就自动填，检测不到就先添加，首次安装后再记录版本。随后才会检查 GitHub，只有 API 限流时才需要 Token。",
+  "add.targetPlaceholder": "AppImage 绝对路径（仅手动选择 AppImage 时需要）",
+  "add.hint": "自动模式会按本机选择安装方式，并决定 AppImage 放在哪里；版本和路径都可以留空。",
   "add.detect": "检测版本",
   "add.detecting": "检测版本中…",
   "add.submit": "添加应用",
@@ -174,5 +174,14 @@
   "app.install": "安装…",
   "app.notInstalled": "尚未安装",
   "notice.addWithoutVersion": "没有检测到已安装版本，已先添加；首次安装后会自动记录版本。",
-  "notice.addedWithoutVersion": "已添加 %1（尚未安装）；首次安装后会自动记录版本。"
+  "notice.addedWithoutVersion": "已添加 %1（尚未安装）；首次安装后会自动记录版本。",
+  "add.method.auto": "自动（推荐）",
+  "notice.addedAuto": "已添加 %1（%2）。",
+  "notice.addedAutoPending": "已添加 %1（%2）；版本会在首次安装后记录。",
+  "notice.addedAutoPath": "已添加 %1（%2 → %3）。",
+  "notice.addedAutoPathPending": "已添加 %1（%2 → %3）；版本会在首次安装后记录。",
+  "errors.no_supported_asset": "这个发行版没有 Arch 能安装的文件，必要时可手动改安装方式。",
+  "status.installs": {
+    "other": "%1 个应用待安装"
+  }
 }
