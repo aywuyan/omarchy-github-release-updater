@@ -201,7 +201,30 @@ Panel {
     return settingsArg !== "" ? text.arg(settingsArg) : text
   }
 
+  function clearNotice() {
+    noticeKey = ""
+    noticeArg1 = ""
+    noticeArg2 = ""
+    noticeArg3 = ""
+    noticeCode = ""
+    noticeDetail = ""
+    noticeError = false
+    noticeTimer.stop()
+  }
+
+  function clearSettingsStatus() {
+    settingsKey = ""
+    settingsArg = ""
+    settingsStatusCode = ""
+    settingsError = false
+    settingsTimer.stop()
+  }
+
   function setNotice(key, arg1, arg2, arg3) {
+    if (key === "") {
+      clearNotice()
+      return
+    }
     noticeKey = key
     noticeArg1 = arg1 === undefined ? "" : String(arg1)
     noticeArg2 = arg2 === undefined ? "" : String(arg2)
@@ -209,6 +232,8 @@ Panel {
     noticeCode = ""
     noticeDetail = ""
     noticeError = false
+    noticeTimer.interval = 6000
+    noticeTimer.restart()
   }
 
   function setNoticeError(code, detail) {
@@ -219,13 +244,21 @@ Panel {
     noticeCode = code || "unknown"
     noticeDetail = detail || ""
     noticeError = true
+    noticeTimer.interval = 10000
+    noticeTimer.restart()
   }
 
   function setSettingsNotice(key, arg) {
+    if (key === "") {
+      clearSettingsStatus()
+      return
+    }
     settingsKey = key
     settingsArg = arg === undefined ? "" : String(arg)
     settingsStatusCode = ""
     settingsError = false
+    settingsTimer.interval = 6000
+    settingsTimer.restart()
   }
 
   function setSettingsError(code) {
@@ -233,6 +266,8 @@ Panel {
     settingsArg = ""
     settingsStatusCode = code || "unknown"
     settingsError = true
+    settingsTimer.interval = 10000
+    settingsTimer.restart()
   }
 
   function statusLabel(status) {
@@ -253,6 +288,8 @@ Panel {
   function close() {
     root.pendingRemove = ""
     root.tokenDraft = ""
+    root.clearNotice()
+    root.clearSettingsStatus()
     root.controller.hide()
   }
 
@@ -808,6 +845,20 @@ Panel {
     id: detectProc
     command: []
     onCompleted: function(out, err, exitCode) { root.handleDetect(out, err, exitCode) }
+  }
+
+  Timer {
+    id: noticeTimer
+    interval: 6000
+    repeat: false
+    onTriggered: root.clearNotice()
+  }
+
+  Timer {
+    id: settingsTimer
+    interval: 6000
+    repeat: false
+    onTriggered: root.clearSettingsStatus()
   }
 
   Timer {
