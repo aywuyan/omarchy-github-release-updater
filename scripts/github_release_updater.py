@@ -540,17 +540,44 @@ def select_asset(app, release):
         matches = [a for a in release.get("assets", []) if pattern.fullmatch(a["name"])]
     else:
         matches = auto_detect_assets(release.get("assets", []), app["install_method"])
+    if len(matches) == 0:
+        if asset_regex:
+            fail("asset_regex_no_match", f"no release asset matches {asset_regex!r}")
+        fail(
+            "asset_none",
+            "no release asset matches this install format and system architecture. "
+            "Choose another install format, or enter a filename regex",
+        )
+    if len(matches) > 1:
+        matches = collapse_identical_digests(matches)
     if len(matches) != 1:
         choices = ", ".join(a["name"] for a in matches[:8])
-        suffix = f": {choices}" if choices else ""
         if asset_regex:
-            fail("asset_regex_no_match", f"expected one asset matching {asset_regex!r}; found {len(matches)}{suffix}")
+            fail("asset_regex_no_match", f"expected one asset matching {asset_regex!r}; found {len(matches)}: {choices}")
         fail(
             "asset_ambiguous",
-            f"could not automatically choose one compatible release asset; found {len(matches)}{suffix}. "
+            f"several release assets match this install format; found {len(matches)}: {choices}. "
             "Enter an optional filename regex to choose one",
         )
     return matches[0]
+
+
+def collapse_identical_digests(assets):
+    """Treat re-uploads of the same bytes as one asset.
+
+    A release often carries the same file twice under a versioned and an
+    unversioned name. GitHub gives both the same digest, so there is nothing to
+    choose between them; prefer the name that carries a version number.
+    """
+    digests = {asset.get("digest") for asset in assets}
+    if len(assets) < 2 or len(digests) != 1:
+        return assets
+    digest = next(iter(digests))
+    if not digest:
+        return assets
+    versioned = [asset for asset in assets if re.search(r"\d+\.\d+", asset.get("name", ""))]
+    pool = versioned or assets
+    return [sorted(pool, key=lambda asset: asset.get("name", ""))[0]]
 
 
 def auto_detect_assets(assets, install_method):
@@ -962,7 +989,7 @@ def add_release_app(manifest, url, version, asset_regex, install_method, name, t
 
 def detect_installed_version(install_method, name, target, url):
     if install_method == "pacman":
-        package = validate_package_name(name)
+        package = validate_package_name(name, required=False)
         if not package:
             parsed = urlsplit(url.strip())
             parts = [part for part in parsed.path.strip("/").split("/") if part]

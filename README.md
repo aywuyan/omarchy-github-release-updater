@@ -12,6 +12,18 @@ published as GitHub assets. If the installed version is left blank, **Add app**
 tries to detect it from Pacman or the AppImage's `--version` output; if that
 fails, enter the version manually.
 
+## First add
+
+Paste a repository URL, leave the app name blank to use the repository name, and
+fill in the installed version. If the version is blank, **Add app** tries to read
+it from Pacman or from the AppImage's `--version`; when that fails, enter the
+version by hand. The add form does not contact GitHub; the first check runs right
+after it is saved.
+
+A repository that publishes only `.deb`, `.zip`, or `.exe` files has nothing this
+plugin can install. Pick **AppImage** when the release carries an `.AppImage`, and
+set its absolute installed path.
+
 ## Configure
 
 For a fresh install, copy the example into user configuration and adjust the

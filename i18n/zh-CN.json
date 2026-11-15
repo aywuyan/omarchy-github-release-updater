@@ -7,7 +7,6 @@
   "panel.checking": "检查中…",
   "panel.close": "关闭",
   "panel.settings": "设置",
-
   "status.idle": "尚未检查",
   "status.checking": "正在检查 GitHub Release…",
   "status.ready": "已登记的 GitHub 应用均为最新版本",
@@ -20,14 +19,12 @@
   "status.installed_newer": "已安装版本较新",
   "status.compare_manually": "请手动比较",
   "status.check_failed": "检查失败",
-
   "app.update": "更新…",
   "app.release": "发行页",
   "app.remove": "移除",
   "app.switchToStable": "切换到稳定版",
   "app.switchToDev": "切换到开发版",
   "app.dev": "开发版",
-
   "add.title": "添加 GitHub 仓库或 Release 地址",
   "add.urlPlaceholder": "https://github.com/owner/repository/releases/latest",
   "add.namePlaceholder": "应用名",
@@ -41,17 +38,15 @@
   "add.channel.development": "开发版（预发布）",
   "add.regexPlaceholder": "可选：文件名匹配正则（留空自动检测）",
   "add.targetPlaceholder": "AppImage 安装路径，例如 ~/Applications/App.AppImage",
-  "add.hint": "添加只保存到本地，随后才检查 GitHub；只有 API 限流时才需要 Token。",
+  "add.hint": "添加只保存到本地。版本留空会尝试从 Pacman 或 AppImage 自动检测；检测不到时请手动填写当前安装版本。随后才会检查 GitHub，只有 API 限流时才需要 Token。",
   "add.detect": "检测版本",
   "add.detecting": "检测版本中…",
   "add.submit": "添加应用",
   "add.adding": "正在添加…",
-
   "remove.title": "从跟踪列表中移除此应用？",
   "remove.body": "移除 %1 的 GitHub 更新跟踪？这不会卸载应用。",
   "remove.cancel": "取消",
   "remove.confirm": "移除",
-
   "notice.removing": "正在移除 %1 的跟踪登记…",
   "notice.removed": "已移除 %1 的更新跟踪。",
   "notice.channel": "已更新 %1 的发行通道。",
@@ -59,7 +54,6 @@
   "notice.added": "已登记 %1，随后会检查 GitHub。",
   "notice.detecting": "正在自动检测当前版本…",
   "notice.detected": "已检测到 %1（来源：%2）。",
-
   "settings.title": "GitHub 与代理设置",
   "settings.back": "返回",
   "settings.token.title": "GitHub Token",
@@ -78,7 +72,6 @@
   "settings.tokenClearing": "正在删除已保存的 Token…",
   "settings.refreshing": "正在刷新 GitHub 登录状态…",
   "settings.refreshed": "登录状态已刷新。",
-
   "settings.proxy.title": "本地代理",
   "settings.proxy.saved": "已保存本地代理地址。停用时使用会话的代理设置。",
   "settings.proxy.none": "未保存本地代理；请求将使用会话的 HTTP(S)_PROXY 设置。",
@@ -98,7 +91,6 @@
   "settings.proxyCleared": "已清除保存的代理设置。",
   "settings.proxyClearing": "正在清除代理设置…",
   "settings.proxyTesting": "正在测试本地代理…",
-
   "settings.interval.title": "自动检查间隔",
   "settings.interval.off": "关闭",
   "settings.interval.1": "每小时",
@@ -110,10 +102,8 @@
   "settings.interval.168": "每周",
   "settings.intervalSaved": "检查间隔已保存。",
   "settings.intervalSaving": "正在保存检查间隔…",
-
   "settings.about": "GitHub 应用更新 %1。设置位于 ~/.config/omarchy/github-release-updater，Token 保存在桌面密钥环中。",
   "settings.language": "界面文字跟随“设置 > 语言”所选的显示语言，切换后无需重启。",
-
   "errors.unknown": "出现未知错误。",
   "errors.helper_missing": "找不到插件辅助程序。",
   "errors.helper_failed": "无法启动 GitHub 检查。",
@@ -140,11 +130,11 @@
   "errors.url_path": "请使用仓库地址、/releases/latest 或 /releases/tag/<tag>。",
   "errors.version_required": "请填写当前安装版本。",
   "errors.package_required": "请先填写包名或仓库地址。",
-  "errors.package_not_installed": "该包尚未安装。",
+  "errors.package_not_installed": "找不到同名的 Pacman 包，请手动填写当前安装版本。",
   "errors.version_detect_failed": "无法读取已安装版本。",
   "errors.version_detect_timeout": "版本检测超时。",
   "errors.version_not_reported": "AppImage 未报告版本，请手动填写。",
-  "errors.asset_ambiguous": "无法自动选定唯一的兼容安装文件，请填写文件名正则。",
+  "errors.asset_ambiguous": "有多个安装文件符合当前安装方式，请填写文件名正则选定一个（上方列出了匹配的文件名）。",
   "errors.asset_regex_no_match": "没有安装文件匹配该文件名正则。",
   "errors.no_prereleases": "该仓库没有已发布的开发版（预发布）。",
   "errors.latest_is_prerelease": "GitHub 的最新发行仍是草稿或预发布。",
@@ -178,5 +168,6 @@
   "errors.file_not_found": "缺少插件需要的文件。",
   "errors.permission_denied": "权限不足。",
   "errors.os_error": "系统调用失败。",
-  "errors.internal": "辅助程序遇到意外错误。"
+  "errors.internal": "辅助程序遇到意外错误。",
+  "errors.asset_none": "这个发行版里没有符合当前安装方式和系统架构的安装文件。请换一种安装方式，或填写文件名正则。"
 }

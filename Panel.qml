@@ -42,6 +42,8 @@ Panel {
   property string noticeCode: ""
   property string noticeDetail: ""
   property bool noticeError: false
+  // "add" keeps form feedback next to the Add button instead of the status row.
+  property string noticeArea: "list"
 
   // ---- add / remove / channel actions ---------------------------------
   property bool adding: false
@@ -146,6 +148,15 @@ Panel {
   }
 
   readonly property string message: statusText()
+
+  // Asset errors carry the matching filenames in the helper's detail; the
+  // panel shows them, the bar tooltip stays one line.
+  readonly property string statusLongText: {
+    if (state === "error" && statusDetail !== ""
+        && (statusCode === "asset_ambiguous" || statusCode === "asset_regex_no_match"))
+      return message + "\n" + statusDetail
+    return message
+  }
 
   readonly property string noticeText: {
     if (noticeCode !== "") {
@@ -378,6 +389,7 @@ Panel {
 
   function removeApp(name) {
     if (!helperPath || removeProc.running) return
+    noticeArea = "list"
     pendingRemove = ""
     removing = true
     setNotice("notice.removing", name)
@@ -400,6 +412,7 @@ Panel {
 
   function setAppChannel(name, channel) {
     if (!helperPath || channelProc.running) return
+    noticeArea = "list"
     switchingChannel = true
     setNotice("")
     channelProc.reset()
@@ -441,6 +454,7 @@ Panel {
   }
 
   function submitAdd() {
+    noticeArea = "add"
     if (adding || detecting || addProc.running) return
     if (!helperPath) {
       setNoticeError("helper_missing")
@@ -489,6 +503,7 @@ Panel {
   }
 
   function detectVersion(forAdd) {
+    noticeArea = "add"
     if (detecting || detectProc.running) {
       if (forAdd) addAfterDetect = true
       return
@@ -928,7 +943,7 @@ Panel {
               Text {
                 textFormat: Text.PlainText
                 width: parent.width - checkButton.width - parent.spacing
-                text: root.message
+                text: root.statusLongText
                 color: root.state === "error" ? Commons.Color.urgent : Commons.Color.muted
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
@@ -950,7 +965,7 @@ Panel {
             Text {
               textFormat: Text.PlainText
               width: parent.width
-              visible: root.noticeText !== ""
+              visible: root.noticeText !== "" && root.noticeArea === "list"
               text: root.noticeText
               color: root.noticeError ? Commons.Color.urgent : Commons.Color.muted
               font.family: Style.font.family
@@ -1171,6 +1186,17 @@ Panel {
                 verticalPadding: Style.spacing.controlPaddingY
                 onClicked: root.submitAdd()
               }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              visible: root.noticeText !== "" && root.noticeArea === "add"
+              text: root.noticeText
+              color: root.noticeError ? Commons.Color.urgent : Commons.Color.muted
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 

@@ -117,6 +117,56 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "duplicate_app")
 
 
+class AssetSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = load_helper()
+
+    def asset(self, name, digest):
+        return {
+            "name": name,
+            "digest": digest,
+            "size": 100,
+            "updated_at": "2026-01-01T00:00:00Z",
+            "browser_download_url": "https://example.invalid/" + name,
+        }
+
+    def release(self, assets):
+        return {"assets": assets, "tag_name": "v0.3.6"}
+
+    def app(self, method="appimage", regex=""):
+        return {"name": "ds-bot", "repo": "owner/repo", "install_method": method, "asset_regex": regex}
+
+    def test_format_without_a_matching_asset(self):
+        release = self.release([self.asset("DS-Bot-0.3.6-linux-amd64.deb", "sha256:aaa")])
+        with self.assertRaises(self.helper.UpdaterError) as caught:
+            self.helper.select_asset(self.app("pacman"), release)
+        self.assertEqual(caught.exception.code, "asset_none")
+
+    def test_same_digest_under_two_names_is_one_asset(self):
+        digest = "sha256:bbb"
+        release = self.release([
+            self.asset("DS-Bot-0.3.6-linux-x86_64.AppImage", digest),
+            self.asset("DS-Bot-linux-x86_64.AppImage", digest),
+        ])
+        chosen = self.helper.select_asset(self.app("appimage"), release)
+        self.assertEqual(chosen["name"], "DS-Bot-0.3.6-linux-x86_64.AppImage")
+
+    def test_different_digests_stay_ambiguous(self):
+        release = self.release([
+            self.asset("DS-Bot-0.3.6-linux-x86_64.AppImage", "sha256:bbb"),
+            self.asset("DS-Bot-linux-x86_64.AppImage", "sha256:ccc"),
+        ])
+        with self.assertRaises(self.helper.UpdaterError) as caught:
+            self.helper.select_asset(self.app("appimage"), release)
+        self.assertEqual(caught.exception.code, "asset_ambiguous")
+
+    def test_version_detection_reports_a_missing_package(self):
+        with self.assertRaises(self.helper.UpdaterError) as caught:
+            self.helper.detect_installed_version(
+                "pacman", "", "", "https://github.com/owner/definitely-not-installed-xyz")
+        self.assertEqual(caught.exception.code, "package_not_installed")
+
+
 class FakeServer:
     """A one-shot HTTP server whose reply is produced by `handler`."""
 
