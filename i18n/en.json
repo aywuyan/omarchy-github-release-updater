@@ -39,7 +39,7 @@
   "add.channel.development": "Developer prerelease",
   "add.regexPlaceholder": "Optional asset filename regex (blank = auto-detect)",
   "add.targetPlaceholder": "Absolute AppImage path, e.g. ~/Applications/App.AppImage",
-  "add.hint": "Adding saves locally. A blank version is detected from Pacman or the AppImage; if detection fails, enter the installed version by hand. GitHub checks run afterward, and a token is only needed when the API is rate limited.",
+  "add.hint": "Adding saves locally. Leave the version blank and it is detected from Pacman or the AppImage when possible; otherwise it is recorded after the first install. GitHub checks run afterward, and a token is only needed when the API is rate limited.",
   "add.detect": "Detect version",
   "add.detecting": "Detecting version…",
   "add.submit": "Add app",
@@ -170,5 +170,10 @@
   "errors.permission_denied": "Permission denied.",
   "errors.os_error": "The system call failed.",
   "errors.internal": "The helper hit an unexpected error.",
-  "errors.asset_none": "No asset in this release matches this install format and system architecture. Choose another install format, or enter a filename regex."
+  "errors.asset_none": "No asset in this release matches this install format and system architecture. Choose another install format, or enter a filename regex.",
+  "status.not_installed": "Not installed",
+  "app.install": "Install…",
+  "app.notInstalled": "not installed",
+  "notice.addWithoutVersion": "No installed version was detected. Added anyway; the version is recorded after the first install.",
+  "notice.addedWithoutVersion": "Added %1 as not installed. Its version is recorded after the first install."
 }

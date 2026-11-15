@@ -14,11 +14,11 @@ fails, enter the version manually.
 
 ## First add
 
-Paste a repository URL, leave the app name blank to use the repository name, and
-fill in the installed version. If the version is blank, **Add app** tries to read
-it from Pacman or from the AppImage's `--version`; when that fails, enter the
-version by hand. The add form does not contact GitHub; the first check runs right
-after it is saved.
+Paste a repository URL and leave the app name blank to use the repository name.
+The installed version is optional: **Add app** first tries to read it from Pacman
+or from the AppImage's `--version`. When nothing can be detected the app is added
+as **not installed**, and its version is recorded after the first install. The add
+form does not contact GitHub; the first check runs right after it is saved.
 
 A repository that publishes only `.deb`, `.zip`, or `.exe` files has nothing this
 plugin can install. Pick **AppImage** when the release carries an `.AppImage`, and

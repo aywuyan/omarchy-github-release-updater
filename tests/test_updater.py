@@ -117,6 +117,66 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "duplicate_app")
 
 
+class FirstInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = load_helper()
+
+    def app(self, method="appimage"):
+        return {
+            "name": "ds-bot",
+            "repo": "Fei2411/DS-Bot",
+            "installed_version": "",
+            "asset_regex": "",
+            "install_method": method,
+            "release_channel": "stable",
+            "installed_build_id": "",
+            "target": "/tmp/DS-Bot.AppImage" if method == "appimage" else "",
+        }
+
+    def test_add_accepts_a_blank_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            manifest = Path(folder) / "apps.json"
+            app = self.helper.add_release_app(
+                manifest, "https://github.com/Fei2411/DS-Bot/releases", "",
+                "", "appimage", "DS-Bot", "/tmp/DS-Bot.AppImage", "stable")
+            self.assertEqual(app["installed_version"], "")
+            loaded = self.helper.load_apps(manifest)
+            self.assertEqual(loaded[0]["installed_version"], "")
+
+    def test_appimage_version_is_detected_after_install(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "DS-Bot.AppImage"
+            path.write_text("#!/bin/sh\necho 'DS-Bot 0.3.6'\n")
+            path.chmod(0o755)
+            result = self.helper.detect_installed_version("appimage", "", str(path), "")
+            self.assertEqual(result["version"], "0.3.6")
+
+    def test_blank_current_version_is_not_installed(self):
+        app = self.app()
+        release = {
+            "tag_name": "v0.3.6",
+            "html_url": "https://github.com/Fei2411/DS-Bot/releases/tag/v0.3.6",
+            "assets": [{
+                "name": "DS-Bot-0.3.6-linux-x86_64.AppImage",
+                "size": 100,
+                "digest": "sha256:bbb",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "browser_download_url": "https://example.invalid/app",
+            }],
+        }
+        original_release = self.helper.release_for
+        original_version = self.helper.installed_version_for
+        try:
+            self.helper.release_for = lambda app: release
+            self.helper.installed_version_for = lambda app, fallback=None: ""
+            result = self.helper.inspect(app)
+        finally:
+            self.helper.release_for = original_release
+            self.helper.installed_version_for = original_version
+        self.assertEqual(result["status"], "not_installed")
+        self.assertEqual(result["latest"], "v0.3.6")
+
+
 class AssetSelectionTests(unittest.TestCase):
     def setUp(self):
         self.helper = load_helper()

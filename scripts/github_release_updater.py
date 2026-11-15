@@ -38,6 +38,7 @@ REPO_PART_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$")
 INTERVAL_HOURS = (0, 1, 3, 6, 12, 24, 48, 168)
 
 STATUS_TEXT = {
+    "not_installed": "not installed",
     "update_available": "update available",
     "up_to_date": "up to date",
     "installed_newer": "installed version is newer",
@@ -156,9 +157,10 @@ def load_apps(manifest):
     for app in apps:
         if not isinstance(app, dict):
             fail("manifest_invalid", "every manifest entry must be an object")
-        for field in ("name", "repo", "installed_version", "install_method"):
+        for field in ("name", "repo", "install_method"):
             if not app.get(field):
                 fail("app_missing_field", f"application entry is missing {field!r}")
+        app.setdefault("installed_version", "")
         app.setdefault("asset_regex", "")
         app.setdefault("release_channel", "stable")
         app.setdefault("installed_build_id", "")
@@ -740,7 +742,11 @@ def inspect(app):
     build_id = asset.get("digest") or asset.get("updated_at") or str(asset.get("id", ""))
     comparison = compare_versions(current_version, latest_version)
     installed_channel = infer_installed_channel(app, current_version)
-    if installed_channel and installed_channel != channel:
+    if not str(current_version).strip():
+        # Nothing installed yet: the release is what "Update" would install,
+        # and the version is recorded once it lands.
+        status = "not_installed"
+    elif installed_channel and installed_channel != channel:
         status = "update_available"
     elif channel == "development":
         if app.get("installed_build_id"):
@@ -941,8 +947,6 @@ def parse_release_url(url):
 def add_release_app(manifest, url, version, asset_regex, install_method, name, target,
                     release_channel="stable", package=""):
     owner, repository = parse_release_url(url)
-    if not version.strip():
-        fail("version_required", "installed version is required")
     if asset_regex.strip():
         try:
             re.compile(asset_regex)
@@ -1099,8 +1103,8 @@ def main():
             settings_service()
             return 0
         if args.action == "add":
-            if not args.url or not args.version:
-                fail("missing_arguments", "add requires --url and --version")
+            if not args.url:
+                fail("missing_arguments", "add requires --url")
             app = add_release_app(args.manifest, args.url, args.version, args.asset_regex,
                                   args.install_method, args.app_name or args.name or "", args.target,
                                   args.release_channel, args.package)
@@ -1154,7 +1158,7 @@ def main():
                     print_report(result)
                 if args.action == "check":
                     continue
-                if args.action == "update" and result["status"] != "update_available":
+                if args.action == "update" and result["status"] not in ("update_available", "not_installed"):
                     if not args.json:
                         print("  skipped: no newer version detected")
                     continue
@@ -1180,6 +1184,12 @@ def main():
                         print("  warning: GitHub provided no asset digest; review upstream checksums before proceeding")
                     install(app, asset, staged)
                     installed_version = installed_version_for(app, result["latest"])
+                    if app.get("install_method") == "appimage":
+                        try:
+                            detected = detect_installed_version("appimage", "", app.get("target", ""), "")
+                            installed_version = detected["version"]
+                        except (OSError, ValueError, UpdaterError, subprocess.SubprocessError):
+                            pass
                     persist_version(args.manifest, app, installed_version, result.get("build_id", ""))
             except Exception as exc:
                 code = error_code(exc)
@@ -1205,7 +1215,7 @@ def main():
         if args.json:
             json_result({
                 "checked": len(results),
-                "updates": sum(r["status"] == "update_available" for r in results),
+                "updates": sum(r["status"] in ("update_available", "not_installed") for r in results),
                 "apps": [{k: v for k, v in result.items() if k not in ("release", "asset_info")} for result in results],
                 "errors": errors,
             })

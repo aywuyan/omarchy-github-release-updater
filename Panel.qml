@@ -51,6 +51,8 @@ Panel {
   property bool removing: false
   property bool switchingChannel: false
   property bool addAfterDetect: false
+  property bool addWithoutVersion: false
+  property bool addingWithoutVersion: false
 
   // ---- form drafts -----------------------------------------------------
   property string formUrl: ""
@@ -337,7 +339,7 @@ Panel {
   function recount() {
     var updates = 0
     for (var i = 0; i < apps.length; i++)
-      if (apps[i].status === "update_available") updates += 1
+      if (apps[i].status === "update_available" || apps[i].status === "not_installed") updates += 1
     updateCount = updates
     checkedCount = apps.length
     state = apps.length === 0 ? "setup" : (updates > 0 ? "updates" : "ready")
@@ -357,7 +359,7 @@ Panel {
   function activateCursor() {
     var app = appAt(cursor)
     if (!app) return
-    if (app.status === "update_available") launchUpdate(app.name)
+    if (app.status === "update_available" || app.status === "not_installed") launchUpdate(app.name)
     else openRelease(app.release_url)
   }
 
@@ -461,10 +463,13 @@ Panel {
       return
     }
     if (!formReady()) return
-    if (formVersion.trim() === "") {
+    var blankVersion = root.addWithoutVersion
+    root.addWithoutVersion = false
+    if (formVersion.trim() === "" && !blankVersion) {
       detectVersion(true)
       return
     }
+    root.addingWithoutVersion = blankVersion
     adding = true
     setNotice("notice.adding")
     addProc.reset()
@@ -485,6 +490,7 @@ Panel {
 
   function handleAdd(out, err, exitCode) {
     adding = false
+    root.addWithoutVersion = false
     var result = parseJson(out)
     if (!result || result.ok !== true) {
       setNoticeError(result ? result.code : "bad_response", result ? result.error : err)
@@ -498,7 +504,8 @@ Panel {
     formTarget = ""
     formChannel = "stable"
     formMethod = "pacman"
-    setNotice("notice.added", result.name)
+    setNotice(root.addingWithoutVersion ? "notice.addedWithoutVersion" : "notice.added", result.name)
+    root.addingWithoutVersion = false
     root.refresh()
   }
 
@@ -540,6 +547,13 @@ Panel {
     addAfterDetect = false
     var result = parseJson(out)
     if (!result || result.ok !== true) {
+      if (shouldAdd) {
+        // No installed version to detect: add it anyway and record the
+        // version after the first install.
+        root.addWithoutVersion = true
+        Qt.callLater(root.submitAdd)
+        return
+      }
       setNoticeError(result ? result.code : "bad_response", result ? result.error : err)
       return
     }
@@ -1403,10 +1417,13 @@ Panel {
     readonly property int appIndex: index
 
     readonly property bool failed: !app || app.status === "check_failed"
-    readonly property bool hasUpdate: !!app && app.status === "update_available"
+    readonly property bool hasUpdate: !!app
+      && (app.status === "update_available" || app.status === "not_installed")
+    readonly property bool notInstalled: !!app && app.status === "not_installed"
     readonly property string rowStatus: app ? String(app.status || "") : ""
     readonly property string versionLine: app
-      ? String(app.current || "?") + " → " + String(app.latest || "?")
+      ? (String(app.current || "") !== "" ? String(app.current) : strings.t("app.notInstalled"))
+        + " → " + String(app.latest || "?")
         + (app.release_channel === "development" ? " · " + strings.t("app.dev") : "")
       : ""
     readonly property string detailLine: app
@@ -1480,7 +1497,7 @@ Panel {
 
         Button {
           visible: row.hasUpdate
-          text: strings.t("app.update")
+          text: strings.t(row.notInstalled ? "app.install" : "app.update")
           fontSize: Style.font.caption
           verticalPadding: Style.spacing.xs
           onClicked: root.launchUpdate(row.app.name)

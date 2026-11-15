@@ -38,7 +38,7 @@
   "add.channel.development": "开发版（预发布）",
   "add.regexPlaceholder": "可选：文件名匹配正则（留空自动检测）",
   "add.targetPlaceholder": "AppImage 安装路径，例如 ~/Applications/App.AppImage",
-  "add.hint": "添加只保存到本地。版本留空会尝试从 Pacman 或 AppImage 自动检测；检测不到时请手动填写当前安装版本。随后才会检查 GitHub，只有 API 限流时才需要 Token。",
+  "add.hint": "添加只保存到本地。版本可以留空：能自动检测就自动填，检测不到就先添加，首次安装后再记录版本。随后才会检查 GitHub，只有 API 限流时才需要 Token。",
   "add.detect": "检测版本",
   "add.detecting": "检测版本中…",
   "add.submit": "添加应用",
@@ -169,5 +169,10 @@
   "errors.permission_denied": "权限不足。",
   "errors.os_error": "系统调用失败。",
   "errors.internal": "辅助程序遇到意外错误。",
-  "errors.asset_none": "这个发行版里没有符合当前安装方式和系统架构的安装文件。请换一种安装方式，或填写文件名正则。"
+  "errors.asset_none": "这个发行版里没有符合当前安装方式和系统架构的安装文件。请换一种安装方式，或填写文件名正则。",
+  "status.not_installed": "尚未安装",
+  "app.install": "安装…",
+  "app.notInstalled": "尚未安装",
+  "notice.addWithoutVersion": "没有检测到已安装版本，已先添加；首次安装后会自动记录版本。",
+  "notice.addedWithoutVersion": "已添加 %1（尚未安装）；首次安装后会自动记录版本。"
 }
