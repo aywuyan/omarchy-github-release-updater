@@ -186,5 +186,6 @@
   "remove.rowQuestion": "Remove %1 from tracking? It stays installed.",
   "add.method.appdir": "AppImage folder (extracted)",
   "add.targetPlaceholderDir": "Extracted AppImage folder, e.g. ~/.local/opt/ds-bot",
-  "errors.appdir_extract_failed": "The AppImage could not be extracted; the old install was left untouched."
+  "errors.appdir_extract_failed": "The AppImage could not be extracted; the old install was left untouched.",
+  "errors.digest_missing": "GitHub published no checksum for this asset; it is not installed without one."
 }

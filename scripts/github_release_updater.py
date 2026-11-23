@@ -875,6 +875,10 @@ def format_size(size):
 
 
 def install(app, asset, path):
+    # An archive installed as root must carry a checksum from the API; there is
+    # no "install anyway" path for an asset GitHub did not digest.
+    if not str(asset.get("digest") or "").strip():
+        fail("digest_missing", "refusing to install an asset GitHub published no digest for")
     method = app["install_method"]
     if method == "pacman":
         if not path.name.endswith((".pkg.tar.zst", ".pkg.tar.xz")):
@@ -1458,16 +1462,13 @@ def main():
                         print("  skipped update")
                         continue
                 asset = result["asset_info"]
+                if args.action == "update" and args.apply and not str(asset.get("digest") or "").strip():
+                    fail("digest_missing",
+                         "GitHub published no SHA-256 digest for this asset; refusing to install without verification")
                 filename = Path(asset["name"]).name
                 staged = download_asset(asset, args.dir / app["name"] / filename)
                 print(f"  downloaded: {staged}")
                 if args.action == "update" and args.apply:
-                    if not asset.get("digest"):
-                        answer = input("GitHub supplied no digest. Install without API digest verification? [y/N] ").strip().lower()
-                        if answer != "y":
-                            print("  downloaded only; installation skipped")
-                            continue
-                        print("  warning: GitHub provided no asset digest; review upstream checksums before proceeding")
                     install(app, asset, staged)
                     installed_version = installed_version_for(app, result["latest"])
                     if app.get("install_method") == "appimage":

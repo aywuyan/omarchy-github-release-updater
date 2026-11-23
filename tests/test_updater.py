@@ -251,7 +251,10 @@ class AppDirTests(unittest.TestCase):
             "chmod +x squashfs-root/AppRun\n"
             "printf '[Desktop Entry]\\nX-AppImage-Version=0.3.6\\n' > squashfs-root/dsbot.desktop\n")
         appimage.chmod(0o755)
-        self.helper.install({"install_method": "appdir", "target": str(target)}, {}, appimage)
+        self.helper.install(
+            {"install_method": "appdir", "target": str(target)},
+            {"name": "DS-Bot-0.3.6.AppImage", "digest": "sha256:" + "a" * 64},
+            appimage)
         self.assertTrue((target / "AppRun").is_file())
         self.assertEqual(self.helper.appdir_version(target), "0.3.6")
         self.assertFalse((target / "old.txt").exists())
@@ -407,6 +410,22 @@ class FakeServer:
         self.httpd.server_close()
 
 
+class InstallGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = load_helper()
+
+    def test_install_refuses_an_asset_without_a_digest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "app.pkg.tar.zst"
+            path.write_text("x")
+            with self.assertRaises(self.helper.UpdaterError) as caught:
+                self.helper.install(
+                    {"install_method": "pacman", "name": "app", "target": ""},
+                    {"name": "app.pkg.tar.zst", "digest": ""},
+                    path)
+            self.assertEqual(caught.exception.code, "digest_missing")
+
+
 class DownloadTests(unittest.TestCase):
     def setUp(self):
         self.helper = load_helper()
@@ -532,6 +551,26 @@ class QmlSafetyTests(unittest.TestCase):
                     line = source.count("\n", 0, match.start()) + 1
                     failures.append(f"{qml.name}:{line}")
         self.assertEqual(failures, [], "Text elements without textFormat: Text.PlainText")
+
+    def test_text_fields_are_bounded_and_not_always_writable(self):
+        source = (PLUGIN_DIR / "Panel.qml").read_text(encoding="utf-8")
+        blocks = []
+        for match in re.finditer(r"\bTextField\s*\{", source):
+            depth = 1
+            index = match.end()
+            while index < len(source) and depth > 0:
+                if source[index] == "{":
+                    depth += 1
+                elif source[index] == "}":
+                    depth -= 1
+                index += 1
+            blocks.append(source[match.end():index])
+        self.assertGreaterEqual(len(blocks), 8)
+        for block in blocks:
+            self.assertIn("maximumLength:", block)
+            self.assertIn("readOnly: !(activeFocus || hovered)", block)
+        self.assertIn("panel.contentRequested = false", source)
+        self.assertIn("unloadContentTimer.restart()", source)
 
     def test_manifest_is_bar_widget_only(self):
         manifest = json.loads((PLUGIN_DIR / "manifest.json").read_text(encoding="utf-8"))

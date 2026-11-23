@@ -126,8 +126,10 @@ replacement questions as well.
   asset names cannot inject markup or load remote resources.
 - Downloads are capped at the size the GitHub API reports for the asset, and the
   GitHub token is dropped when a redirect leaves `github.com`.
-- Digest verification uses the asset digest GitHub publishes. If GitHub provides
-  no digest, the updater asks again before installing anything.
+- Digest verification uses the asset digest GitHub publishes. An asset without
+  one is never installed: the update stops before downloading it.
+- The panel keeps no writable text fields while it is closed; each field is
+  length-capped and only writable while focused or hovered.
 - `sudo pacman -U` installs the downloaded archive; it is not independently
   signature-verified by this plugin.
 

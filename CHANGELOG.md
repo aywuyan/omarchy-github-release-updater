@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.1
+
+- Refuse to install an asset GitHub published no digest for; the update stops
+  before downloading instead of offering an unverified `pacman -U`.
+- Unload the panel content when the card closes, so no writable Qt text fields
+  stay in the long-lived shell. Fields are capped in length and are writable
+  only while focused or hovered, which bounds the Qt 6.12 clipboard surface.
+
 ## 0.11.0
 
 - Automatic add: paste a repository URL and the plugin chooses the install

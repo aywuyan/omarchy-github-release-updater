@@ -278,11 +278,18 @@ Panel {
 
   // ---- lifecycle -------------------------------------------------------
   function open() {
+    unloadContentTimer.stop()
+    if (!panel.contentRequested) panel.contentRequested = true
+    Qt.callLater(root.focusPage)
     root.controller.show()
     if (root.page !== "list") root.page = "list"
     if (root.state === "idle" || (!root.checking && Date.now() - root.lastCheckAt > 60000))
       root.refresh()
     if (!root.settingsLoaded) root.sendSettings({action: "get"})
+  }
+
+  function focusPage() {
+    if (root.opened && panel.loadedContent) panel.loadedContent.forceActiveFocus()
   }
 
   function close() {
@@ -291,6 +298,8 @@ Panel {
     root.clearNotice()
     root.clearSettingsStatus()
     root.controller.hide()
+    // Keep no writable text fields in the shared shell while the card is gone.
+    unloadContentTimer.restart()
   }
 
   function handleEscape() {
@@ -848,6 +857,13 @@ Panel {
   }
 
   Timer {
+    id: unloadContentTimer
+    interval: 300
+    repeat: false
+    onTriggered: if (!root.opened) panel.contentRequested = false
+  }
+
+  Timer {
     id: noticeTimer
     interval: 6000
     repeat: false
@@ -898,6 +914,15 @@ Panel {
         settingsProc.write(root.pendingSettings)
         root.pendingSettings = ""
       }
+    }
+  }
+
+  // The content is destroyed on close, so hand it the keyboard again once the
+  // freshly loaded page exists.
+  Connections {
+    target: panel
+    function onLoadedContentChanged() {
+      if (root.opened) Qt.callLater(root.focusPage)
     }
   }
 
@@ -1128,6 +1153,8 @@ Panel {
               text: root.formUrl
               placeholderText: strings.t("add.urlPlaceholder")
               selectByMouse: true
+              maximumLength: 2048
+              readOnly: !(activeFocus || hovered)
               onTextChanged: if (root.formUrl !== text) root.formUrl = text
             }
 
@@ -1141,6 +1168,8 @@ Panel {
                 text: root.formName
                 placeholderText: strings.t("add.namePlaceholder")
                 selectByMouse: true
+                maximumLength: 128
+                readOnly: !(activeFocus || hovered)
                 onTextChanged: if (root.formName !== text) root.formName = text
               }
               TextField {
@@ -1149,6 +1178,8 @@ Panel {
                 text: root.formPackage
                 placeholderText: strings.t("add.packagePlaceholder")
                 selectByMouse: true
+                maximumLength: 128
+                readOnly: !(activeFocus || hovered)
                 onTextChanged: if (root.formPackage !== text) root.formPackage = text
               }
               TextField {
@@ -1157,6 +1188,8 @@ Panel {
                 text: root.formVersion
                 placeholderText: strings.t("add.versionPlaceholder")
                 selectByMouse: true
+                maximumLength: 128
+                readOnly: !(activeFocus || hovered)
                 onTextChanged: if (root.formVersion !== text) root.formVersion = text
               }
             }
@@ -1196,6 +1229,8 @@ Panel {
               text: root.formRegex
               placeholderText: strings.t("add.regexPlaceholder")
               selectByMouse: true
+              maximumLength: 512
+              readOnly: !(activeFocus || hovered)
               onTextChanged: if (root.formRegex !== text) root.formRegex = text
             }
 
@@ -1208,6 +1243,8 @@ Panel {
                 ? strings.t("add.targetPlaceholderDir")
                 : strings.t("add.targetPlaceholder")
               selectByMouse: true
+              maximumLength: 4096
+              readOnly: !(activeFocus || hovered)
               onTextChanged: if (root.formTarget !== text) root.formTarget = text
             }
 
@@ -1296,6 +1333,8 @@ Panel {
               password: true
               placeholderText: strings.t("settings.token.placeholder")
               selectByMouse: true
+              maximumLength: 4096
+              readOnly: !(activeFocus || hovered)
               onTextChanged: if (root.tokenDraft !== text) root.tokenDraft = text
             }
 
@@ -1359,6 +1398,8 @@ Panel {
               text: root.proxyDraft
               placeholderText: strings.t("settings.proxy.placeholder")
               selectByMouse: true
+              maximumLength: 256
+              readOnly: !(activeFocus || hovered)
               onTextChanged: if (root.proxyDraft !== text) root.proxyDraft = text
             }
 

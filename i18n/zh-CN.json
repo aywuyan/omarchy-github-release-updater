@@ -184,5 +184,6 @@
   "remove.rowQuestion": "移除 %1 的更新跟踪？（不会卸载）",
   "add.method.appdir": "已解压的 AppImage（目录）",
   "add.targetPlaceholderDir": "已解压 AppImage 的目录，例如 ~/.local/opt/ds-bot",
-  "errors.appdir_extract_failed": "AppImage 解压失败，旧安装没有被改动。"
+  "errors.appdir_extract_failed": "AppImage 解压失败，旧安装没有被改动。",
+  "errors.digest_missing": "GitHub 没有为这个安装文件提供校验值，缺少校验时不会安装。"
 }
